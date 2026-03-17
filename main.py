@@ -3,42 +3,44 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
 from typing import Any
 
 import discord
 from discord.ext import commands
-from dotenv import load_dotenv
 
-from keep_alive import keep_alive
 import db
 import embeds as embeds_module
 from embeds import Embeds
 
-load_dotenv()
-
-# Logging
+# ── Logging ───────────────────────────────────────────────────────────────────
+# Structured for Azure container logs — stdout, no color, ISO timestamps.
+# Azure Monitor / Log Analytics picks these up via container stdout stream.
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+    stream=sys.stdout,
 )
 logger = logging.getLogger("denki")
 
-# Config
+# ── Config ────────────────────────────────────────────────────────────────────
+# All values injected as ACI environment variables — no .env file needed.
 
-TOKEN: str = os.getenv("DISCORD_TOKEN", "")
-PREFIX: str = "!d "
-OWNER_ID: int = int(os.getenv("OWNER_ID", "0"))
+TOKEN:    str = os.environ.get("DISCORD_TOKEN", "")
+OWNER_ID: int = int(os.environ.get("OWNER_ID", "0"))
+PREFIX:   str = "!d "
+INVITE:   str = "https://discord.com/oauth2/authorize?client_id=1422399195062734881&permissions=8&scope=bot+applications.commands"
 
 if not TOKEN:
-    logger.critical("DISCORD_TOKEN is not set. Bot cannot start.")
-    raise RuntimeError("DISCORD_TOKEN is not set.")
+    logger.critical("DISCORD_TOKEN is not set — cannot start.")
+    sys.exit(1)
 
 if not OWNER_ID:
-    logger.warning("OWNER_ID is not set. Owner-only commands will not work.")
+    logger.warning("OWNER_ID is not set — sudo commands will not work.")
 
-# Cogs
+# ── Cogs ──────────────────────────────────────────────────────────────────────
 
 COGS: list[str] = [
     "cogs.help",
@@ -55,7 +57,7 @@ COGS: list[str] = [
     "cogs.blacktea",
 ]
 
-# Bot setup
+# ── Bot ───────────────────────────────────────────────────────────────────────
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -68,25 +70,26 @@ bot = commands.Bot(
     help_command=None,
 )
 
-
-# Global ban check
-# Runs before every command — blocks banned users immediately
+# ── Global checks ─────────────────────────────────────────────────────────────
 
 @bot.check
 async def global_ban_check(ctx: commands.Context[Any]) -> bool:
     if await db.is_banned(ctx.author.id):
-        await ctx.reply(embed=Embeds.error("You have been banned from Denki. If you believe this is a mistake, contact the bot owner."))
+        await ctx.reply(embed=Embeds.error(
+            "You have been banned from Denki. "
+            "If you believe this is a mistake, contact the bot owner."
+        ))
         return False
     return True
 
 
-# Global slash command ban check
-
-# Set as attribute (not decorator) to avoid "coroutine never awaited" warning on shutdown
 async def slash_ban_check(interaction: discord.Interaction) -> bool:
     if await db.is_banned(interaction.user.id):
         await interaction.response.send_message(
-            embed=Embeds.error("You have been banned from Denki. If you believe this is a mistake, contact the bot owner."),
+            embed=Embeds.error(
+                "You have been banned from Denki. "
+                "If you believe this is a mistake, contact the bot owner."
+            ),
             ephemeral=True,
         )
         return False
@@ -94,18 +97,17 @@ async def slash_ban_check(interaction: discord.Interaction) -> bool:
 
 bot.tree.interaction_check = slash_ban_check  # type: ignore[assignment]
 
-
-# Events
+# ── Events ────────────────────────────────────────────────────────────────────
 
 @bot.event
 async def on_ready() -> None:
-    logger.info(f"Logged in as {bot.user} (ID: {bot.user.id if bot.user else 'unknown'})")
-    logger.info(f"Prefix: {PREFIX!r} | Owner ID: {OWNER_ID}")
+    user_id   = bot.user.id   if bot.user else "unknown"
+    user_name = str(bot.user) if bot.user else "unknown"
 
-    # Load season color into embed cache
+    # Refresh season color cache from DB
     await embeds_module.refresh_season_color()
-    logger.info("Season color cache refreshed")
 
+    # Set presence
     await bot.change_presence(
         activity=discord.Activity(
             type=discord.ActivityType.watching,
@@ -113,57 +115,55 @@ async def on_ready() -> None:
         )
     )
 
-    synced: list[Any] = []
+    # Sync slash commands
     try:
         synced = await bot.tree.sync()
-        logger.info(f"Synced {len(synced)} slash commands globally")
+        synced_count = len(synced)
     except Exception as e:
         logger.error(f"Failed to sync slash commands: {e}")
+        synced_count = 0
 
-    invite_url = f"https://discord.com/oauth2/authorize?client_id={bot.user.id if bot.user else 'unknown'}&permissions=8&scope=bot%20applications.commands"
-    logger.info("─────────────────────────────────────────────")
-    logger.info("⚡ Denki is online and ready.")
-    logger.info(f"Invite: {invite_url}")
-    logger.info("─────────────────────────────────────────────")
-
-    print("\n" + "─" * 50)
-    print("  ⚡ Denki is online")
-    print(f"  Logged in as: {bot.user}")
-    print(f"  Servers: {len(bot.guilds)}")
-    print(f"  Slash commands synced: {len(synced)}")
-    print(f"  Invite URL: {invite_url}")
-    print("─" * 50 + "\n")
+    # Structured startup log — easy to parse in Azure Monitor
+    logger.info("denki.startup bot=%s id=%s guilds=%d cogs=%d commands=%d",
+        user_name, user_id, len(bot.guilds), len(COGS), synced_count)
+    logger.info("denki.startup invite=%s", INVITE)
+    logger.info("denki.startup status=ready")
 
 
 @bot.event
 async def on_disconnect() -> None:
-    logger.warning("Denki disconnected from Discord gateway.")
+    logger.warning("denki.gateway status=disconnected")
+
+
+@bot.event
+async def on_resumed() -> None:
+    logger.info("denki.gateway status=resumed")
 
 
 @bot.event
 async def on_guild_join(guild: discord.Guild) -> None:
-    """Register guild and config when bot joins a new server."""
     await db.get_or_create_guild(guild.id)
     await db.get_or_create_guild_config(guild.id)
-    logger.info(f"Joined guild: {guild.name} (ID: {guild.id})")
+    logger.info("denki.guild action=join id=%d name=%r members=%d",
+        guild.id, guild.name, guild.member_count or 0)
 
 
 @bot.event
 async def on_member_join(member: discord.Member) -> None:
-    """Check member count and update guilds.global flag if threshold reached."""
     guild = member.guild
     if guild.member_count and guild.member_count >= 250:
         await db.set_guild_global(guild.id, True)
-        logger.info(f"Guild {guild.id} unlocked global leaderboard ({guild.member_count} members)")
+        logger.info("denki.guild action=global_unlock id=%d members=%d",
+            guild.id, guild.member_count)
 
 
 @bot.event
 async def on_member_remove(member: discord.Member) -> None:
-    """Re-check member count if someone leaves — may lose global status."""
     guild = member.guild
     if guild.member_count and guild.member_count < 250:
         await db.set_guild_global(guild.id, False)
-        logger.info(f"Guild {guild.id} lost global leaderboard status ({guild.member_count} members)")
+        logger.info("denki.guild action=global_revoke id=%d members=%d",
+            guild.id, guild.member_count)
 
 
 @bot.event
@@ -179,21 +179,20 @@ async def on_command_error(ctx: commands.Context[Any], error: commands.CommandEr
     if isinstance(error, commands.MissingRequiredArgument):
         await ctx.reply(embed=Embeds.error(f"Missing argument: `{error.param.name}`"))
         return
-    logger.error(f"Unhandled command error in {ctx.command}: {error}", exc_info=error)
+    logger.error("denki.command error=%r command=%r", str(error), str(ctx.command), exc_info=error)
     await ctx.reply(embed=Embeds.error("Something went wrong. Please try again."))
 
 
-# Entry point
+# ── Entry point ───────────────────────────────────────────────────────────────
 
 async def main() -> None:
-    keep_alive()
     async with bot:
         for cog in COGS:
             try:
                 await bot.load_extension(cog)
-                logger.info(f"Loaded cog: {cog}")
+                logger.info("denki.cog action=loaded name=%s", cog)
             except Exception as e:
-                logger.error(f"Failed to load cog {cog}: {e}", exc_info=e)
+                logger.error("denki.cog action=failed name=%s error=%r", cog, str(e), exc_info=e)
 
         try:
             await bot.start(TOKEN)
@@ -205,4 +204,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Shutdown requested — Denki stopped cleanly.")
+        logger.info("denki.shutdown reason=keyboard_interrupt")
