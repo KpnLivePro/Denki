@@ -36,6 +36,8 @@ def _days_remaining(season: dict) -> int:
     """Calculate days left in a season."""
     import math
     end = datetime.fromisoformat(season["end"])
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=timezone.utc)
     now = datetime.now(timezone.utc)
     return max(0, math.ceil((end - now).total_seconds() / 86400))
 
@@ -45,7 +47,8 @@ def _member_days(member: discord.Member) -> int:
     joined = member.joined_at
     if not joined:
         return 0
-    delta = datetime.now(timezone.utc) - joined.replace(tzinfo=timezone.utc)
+    joined_aware = joined if joined.tzinfo else joined.replace(tzinfo=timezone.utc)
+    delta = datetime.now(timezone.utc) - joined_aware
     return delta.days
 
 
@@ -67,6 +70,7 @@ class Investing(commands.Cog):
         await self._invest(ctx, amount=amount, is_slash=False)
 
     async def _invest(self, ctx_or_interaction: Any, amount: int, is_slash: bool) -> None:
+        await _defer(ctx_or_interaction, is_slash)
         author = ctx_or_interaction.user if is_slash else ctx_or_interaction.author
         guild   = ctx_or_interaction.guild
         member  = guild.get_member(author.id) or author
@@ -146,6 +150,7 @@ class Investing(commands.Cog):
         await self._vault(ctx, is_slash=False)
 
     async def _vault(self, ctx_or_interaction: Any, is_slash: bool) -> None:
+        await _defer(ctx_or_interaction, is_slash)
         guild = ctx_or_interaction.guild
 
         season = await db.get_active_season()
@@ -172,6 +177,12 @@ class Investing(commands.Cog):
         )
         await _respond(ctx_or_interaction, embed, is_slash)
 
+
+
+async def _defer(ctx_or_interaction: Any, is_slash: bool, ephemeral: bool = False) -> None:
+    """Defer a slash interaction immediately to extend the 3-second response window."""
+    if is_slash and not ctx_or_interaction.response.is_done():
+        await ctx_or_interaction.response.defer(ephemeral=ephemeral)
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Investing(bot))

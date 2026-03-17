@@ -45,6 +45,7 @@ class Shop(commands.Cog):
         await self._shop(ctx, is_slash=False)
 
     async def _shop(self, ctx_or_interaction: Any, is_slash: bool) -> None:
+        await _defer(ctx_or_interaction, is_slash)
         guild = ctx_or_interaction.guild
 
         config = await db.get_or_create_guild_config(guild.id)
@@ -74,6 +75,7 @@ class Shop(commands.Cog):
         await self._buy(ctx, item_id=item_id, is_slash=False)
 
     async def _buy(self, ctx_or_interaction: Any, item_id: int, is_slash: bool) -> None:
+        await _defer(ctx_or_interaction, is_slash)
         author = ctx_or_interaction.user if is_slash else ctx_or_interaction.author
         guild  = ctx_or_interaction.guild
 
@@ -132,11 +134,12 @@ class Shop(commands.Cog):
             except Exception as e:
                 logger.error(f"Role assignment error: {e}")
 
-        wallet_data = await db.get_or_create_user(author.id)
+        # Wallet was already fetched and reduced — compute new balance directly
+        new_wallet = int(user_data["wallet"]) - price
         embed = Embeds.purchase(
             item_name=str(item["name"]),
             price=price,
-            wallet=int(wallet_data["wallet"]),
+            wallet=new_wallet,
         )
         await _respond(ctx_or_interaction, embed, is_slash)
 
@@ -160,6 +163,7 @@ class Shop(commands.Cog):
         await self._inventory(ctx, user=user, is_slash=False)
 
     async def _inventory(self, ctx_or_interaction: Any, user: discord.Member | None, is_slash: bool) -> None:
+        await _defer(ctx_or_interaction, is_slash)
         author = ctx_or_interaction.user if is_slash else ctx_or_interaction.author
         target = user or author
 
@@ -232,6 +236,7 @@ class Shop(commands.Cog):
         role: discord.Role | None,
         is_slash: bool,
     ) -> None:
+        await _defer(ctx_or_interaction, is_slash)
         guild = ctx_or_interaction.guild
 
         # Shop must be open
@@ -277,6 +282,7 @@ class Shop(commands.Cog):
         await self._removeitem(ctx, item_id=item_id, is_slash=False)
 
     async def _removeitem(self, ctx_or_interaction: Any, item_id: int, is_slash: bool) -> None:
+        await _defer(ctx_or_interaction, is_slash)
         guild = ctx_or_interaction.guild
 
         item = await db.get_shop_item(item_id)
@@ -313,6 +319,7 @@ class Shop(commands.Cog):
         await self._shopopen(ctx, is_slash=False)
 
     async def _shopopen(self, ctx_or_interaction: Any, is_slash: bool) -> None:
+        await _defer(ctx_or_interaction, is_slash)
         guild = ctx_or_interaction.guild
 
         season = await db.get_active_season()
@@ -348,6 +355,12 @@ class Shop(commands.Cog):
                 ephemeral=True,
             )
 
+
+
+async def _defer(ctx_or_interaction: Any, is_slash: bool, ephemeral: bool = False) -> None:
+    """Defer a slash interaction immediately to extend the 3-second response window."""
+    if is_slash and not ctx_or_interaction.response.is_done():
+        await ctx_or_interaction.response.defer(ephemeral=ephemeral)
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Shop(bot))

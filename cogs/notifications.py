@@ -17,13 +17,11 @@ async def notify_season_start(bot: commands.Bot, season: dict) -> None:
     Called by seasons.py after a new season is created.
     """
     try:
-        res = db.supabase.table("guildconfig").select("guild_id, notif_channel, notif_role").execute()
+        res = db.supabase.table("guildconfig").select("guild_id, notif_channel, notif_role").not_.is_("notif_channel", "null").execute()
         configs = [dict(r) for r in (res.data or [])]  # type: ignore[arg-type]
     except Exception as e:
         logger.error(f"Failed to fetch guild configs for season start notification: {e}")
         return
-
-    embed = Embeds.season_start(season)
 
     for config in configs:
         notif_channel = config.get("notif_channel")
@@ -35,6 +33,8 @@ async def notify_season_start(bot: commands.Bot, season: dict) -> None:
             if not channel or not isinstance(channel, discord.TextChannel):
                 continue
 
+            # Build a fresh embed per guild so mutations don't bleed across guilds
+            embed = Embeds.season_start(season)
             mention = f"<@&{config['notif_role']}>" if config.get("notif_role") else None
             await channel.send(content=mention, embed=embed)
         except discord.Forbidden:

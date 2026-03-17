@@ -47,6 +47,7 @@ class Admin(commands.Cog):
         await self._config(ctx, is_slash=False)
 
     async def _config(self, ctx_or_interaction: Any, is_slash: bool) -> None:
+        await _defer(ctx_or_interaction, is_slash, ephemeral=True)
         guild  = ctx_or_interaction.guild
         config = await db.get_or_create_guild_config(guild.id)
 
@@ -68,11 +69,9 @@ class Admin(commands.Cog):
 
         view = ConfigView(guild_id=guild.id, config=config)
         if is_slash:
-            await ctx_or_interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            await ctx_or_interaction.followup.send(embed=embed, view=view, ephemeral=True)
         else:
             await ctx_or_interaction.reply(embed=embed, view=view)
-
-    # /setnotifchannel
 
     @app_commands.command(name="setnotifchannel", description="Set the channel for Denki announcements. Admin only.")
     @app_commands.describe(channel="Channel to send announcements to")
@@ -145,6 +144,7 @@ class Admin(commands.Cog):
         await self._earnsettings(ctx, is_slash=False)
 
     async def _earnsettings(self, ctx_or_interaction: Any, is_slash: bool) -> None:
+        await _defer(ctx_or_interaction, is_slash, ephemeral=True)
         guild  = ctx_or_interaction.guild
         config = await db.get_or_create_guild_config(guild.id)
 
@@ -155,7 +155,7 @@ class Admin(commands.Cog):
         view = EarnSettingsView(guild_id=guild.id, config=config)
 
         if is_slash:
-            await ctx_or_interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            await ctx_or_interaction.followup.send(embed=embed, view=view, ephemeral=True)
         else:
             await ctx_or_interaction.reply(embed=embed, view=view)
 
@@ -190,6 +190,7 @@ class Admin(commands.Cog):
         reason: str,
         is_slash: bool,
     ) -> None:
+        await _defer(ctx_or_interaction, is_slash, ephemeral=True)
         author = ctx_or_interaction.user if is_slash else ctx_or_interaction.author
         guild  = ctx_or_interaction.guild
 
@@ -321,6 +322,12 @@ class EarnSettingsView(discord.ui.View):
         )
         self.stop()
 
+
+
+async def _defer(ctx_or_interaction: Any, is_slash: bool, ephemeral: bool = False) -> None:
+    """Defer a slash interaction immediately to extend the 3-second response window."""
+    if is_slash and not ctx_or_interaction.response.is_done():
+        await ctx_or_interaction.response.defer(ephemeral=ephemeral)
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Admin(bot))

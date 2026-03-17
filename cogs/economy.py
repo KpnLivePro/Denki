@@ -90,6 +90,12 @@ async def _respond(
         await ctx_or_interaction.reply(embed=embed)
 
 
+async def _defer(ctx_or_interaction: Any, is_slash: bool, ephemeral: bool = False) -> None:
+    """Defer a slash interaction immediately to extend the 3-second response window."""
+    if is_slash and not ctx_or_interaction.response.is_done():
+        await ctx_or_interaction.response.defer(ephemeral=ephemeral)
+
+
 class Economy(commands.Cog):
     """Core economy commands — balance, daily, work, rob, pay."""
 
@@ -116,6 +122,7 @@ class Economy(commands.Cog):
         await self._balance(ctx, user=user, is_slash=False)
 
     async def _balance(self, ctx_or_interaction: Any, user: discord.Member | None, is_slash: bool) -> None:
+        await _defer(ctx_or_interaction, is_slash)
         author = ctx_or_interaction.user if is_slash else ctx_or_interaction.author
         target = user or author
 
@@ -152,6 +159,7 @@ class Economy(commands.Cog):
         await self._daily(ctx, is_slash=False)
 
     async def _daily(self, ctx_or_interaction: Any, is_slash: bool) -> None:
+        await _defer(ctx_or_interaction, is_slash)
         author = ctx_or_interaction.user if is_slash else ctx_or_interaction.author
         guild_id: int = ctx_or_interaction.guild.id
 
@@ -161,7 +169,7 @@ class Economy(commands.Cog):
 
         last = await db.get_cooldown(author.id, "daily")
         if last:
-            elapsed = datetime.now(timezone.utc) - last.replace(tzinfo=timezone.utc)
+            elapsed = datetime.now(timezone.utc) - last
             if elapsed < DAILY_COOLDOWN:
                 remaining = DAILY_COOLDOWN - elapsed
                 return await _respond(ctx_or_interaction, Embeds.cooldown("Daily", _format_remaining(remaining)), is_slash)
@@ -188,6 +196,7 @@ class Economy(commands.Cog):
         await self._work(ctx, is_slash=False)
 
     async def _work(self, ctx_or_interaction: Any, is_slash: bool) -> None:
+        await _defer(ctx_or_interaction, is_slash)
         author = ctx_or_interaction.user if is_slash else ctx_or_interaction.author
         guild_id: int = ctx_or_interaction.guild.id
 
@@ -197,7 +206,7 @@ class Economy(commands.Cog):
 
         last = await db.get_cooldown(author.id, "work")
         if last:
-            elapsed = datetime.now(timezone.utc) - last.replace(tzinfo=timezone.utc)
+            elapsed = datetime.now(timezone.utc) - last
             if elapsed < WORK_COOLDOWN:
                 remaining = WORK_COOLDOWN - elapsed
                 return await _respond(ctx_or_interaction, Embeds.cooldown("Work", _format_remaining(remaining)), is_slash)
@@ -226,6 +235,7 @@ class Economy(commands.Cog):
         await self._rob(ctx, target=user, is_slash=False)
 
     async def _rob(self, ctx_or_interaction: Any, target: discord.Member, is_slash: bool) -> None:
+        await _defer(ctx_or_interaction, is_slash)
         author = ctx_or_interaction.user if is_slash else ctx_or_interaction.author
         guild_id: int = ctx_or_interaction.guild.id
 
@@ -240,7 +250,7 @@ class Economy(commands.Cog):
 
         last = await db.get_cooldown(author.id, "rob")
         if last:
-            elapsed = datetime.now(timezone.utc) - last.replace(tzinfo=timezone.utc)
+            elapsed = datetime.now(timezone.utc) - last
             if elapsed < ROB_COOLDOWN:
                 remaining = ROB_COOLDOWN - elapsed
                 return await _respond(ctx_or_interaction, Embeds.cooldown("Rob", _format_remaining(remaining)), is_slash)
@@ -299,6 +309,7 @@ class Economy(commands.Cog):
         await self._pay(ctx, target=user, amount_str=amount, is_slash=False)
 
     async def _pay(self, ctx_or_interaction: Any, target: discord.Member, amount_str: str, is_slash: bool) -> None:
+        await _defer(ctx_or_interaction, is_slash)
         author = ctx_or_interaction.user if is_slash else ctx_or_interaction.author
 
         if target.id == author.id:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -105,7 +106,7 @@ class Leaderboard(commands.Cog):
     async def lbg(self, ctx: commands.Context[Any]) -> None:
         await self._leaderboard_global(ctx, is_slash=False)
 
-    # Server leaderboard
+    # ── Server leaderboard ────────────────────────────────────────────────────
 
     async def _leaderboard_server(self, ctx_or_interaction: Any, is_slash: bool) -> None:
         guild = ctx_or_interaction.guild
@@ -118,13 +119,17 @@ class Leaderboard(commands.Cog):
                 is_slash,
             )
 
-        # Flatten nested users(wallet) join into flat { user_id, wallet }
+        # Flatten nested users(wallet) join — Supabase may return dict or single-item list
         flat: list[dict] = []
         for row in rows:
             r = dict(row)
             nested = r.get("users") or {}
+            if isinstance(nested, list):
+                nested = nested[0] if nested else {}
             if isinstance(nested, dict):
                 r["wallet"] = int(nested.get("wallet", 0))
+            else:
+                r["wallet"] = 0
             flat.append(r)
 
         flat.sort(key=lambda x: int(x.get("wallet", 0)), reverse=True)
@@ -140,7 +145,7 @@ class Leaderboard(commands.Cog):
         )
         await _respond(ctx_or_interaction, embed, is_slash)
 
-    # Investors leaderboard
+    # ── Investors leaderboard ─────────────────────────────────────────────────
 
     async def _leaderboard_investors(self, ctx_or_interaction: Any, is_slash: bool) -> None:
         guild = ctx_or_interaction.guild
@@ -176,7 +181,7 @@ class Leaderboard(commands.Cog):
         )
         await _respond(ctx_or_interaction, embed, is_slash)
 
-    # Global leaderboard
+    # ── Global leaderboard ────────────────────────────────────────────────────
 
     async def _leaderboard_global(self, ctx_or_interaction: Any, is_slash: bool) -> None:
         guild = ctx_or_interaction.guild
@@ -200,15 +205,15 @@ class Leaderboard(commands.Cog):
                 is_slash,
             )
 
-        # Global users may not be in this guild — fetch from API
+        # Fetch all global users concurrently — they may not be in this guild's cache
+        user_objects: list[discord.User | None] = await asyncio.gather(
+            *[self._safe_fetch_user(int(row["user_id"])) for row in rows]
+        )
+
         name_map: dict[int, str] = {}
-        for row in rows:
+        for row, user_obj in zip(rows, user_objects):
             uid = int(row["user_id"])
-            try:
-                user = await self.bot.fetch_user(uid)
-                name_map[uid] = user.display_name
-            except Exception:
-                name_map[uid] = f"User {uid}"
+            name_map[uid] = user_obj.display_name if user_obj else f"User {uid}"
 
         embed = Embeds.leaderboard(
             title="Global — Richest Denki Players",
@@ -218,6 +223,12 @@ class Leaderboard(commands.Cog):
             value_prefix="¥",
         )
         await _respond(ctx_or_interaction, embed, is_slash)
+
+    async def _safe_fetch_user(self, user_id: int) -> discord.User | None:
+        try:
+            return await self.bot.fetch_user(user_id)
+        except Exception:
+            return None
 
 
 async def setup(bot: commands.Bot) -> None:

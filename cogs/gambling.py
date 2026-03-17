@@ -156,12 +156,21 @@ class BlackjackView(discord.ui.View):
         self.finished = True
         self.stop()
 
-        wallet_data = await db.update_wallet(self.player_id, payout)
+        # payout > 0 means player won their bet back PLUS profit (so refund stake + winnings)
+        # payout == 0 means push (refund stake only)
+        # payout < 0 means loss (stake already deducted — no further change)
+        net = self.amount + payout  # amount to return: stake back + profit (or 0 on loss)
+        if net > 0:
+            wallet_data = await db.update_wallet(self.player_id, net)
+        else:
+            # Loss: stake was already deducted on game start, nothing to return
+            wallet_data = await db.get_or_create_user(self.player_id)
+
         await db.log_transaction(
-            0 if payout > 0 else self.player_id,
-            self.player_id if payout > 0 else 0,
-            abs(payout),
-            "gamble_win" if payout > 0 else "gamble_loss",
+            0 if payout >= 0 else self.player_id,
+            self.player_id if payout >= 0 else 0,
+            abs(payout) if payout != 0 else self.amount,
+            "gamble_win" if payout > 0 else ("gamble_loss" if payout < 0 else "gamble_push"),
         )
 
         embed = Embeds.blackjack_end(
@@ -228,8 +237,50 @@ class BlackjackView(discord.ui.View):
     async def on_timeout(self) -> None:
         if not self.finished:
             try:
-                # Auto-stand on timeout
-                pass
+                # Simulate a stand interaction to resolve the game cleanly
+                while _hand_total(self.dealer_hand) < DEALER_STAND:
+                    self.dealer_hand.append(self.deck.pop())
+
+                player_total = _hand_total(self.player_hand)
+                dealer_total = _hand_total(self.dealer_hand)
+
+                if dealer_total > 21:
+                    result = "Dealer busts — you win! (auto-stand)"
+                    payout = self.amount
+                elif player_total > dealer_total:
+                    result = "You win! (auto-stand)"
+                    payout = self.amount
+                elif player_total == dealer_total:
+                    result = "Push — tie! (auto-stand)"
+                    payout = 0
+                else:
+                    result = "Dealer wins! (auto-stand — timed out)"
+                    payout = -self.amount
+
+                self.finished = True
+                wallet_data = await db.update_wallet(self.player_id, self.amount + payout)
+                await db.log_transaction(
+                    0 if payout >= 0 else self.player_id,
+                    self.player_id if payout >= 0 else 0,
+                    abs(payout),
+                    "gamble_win" if payout > 0 else "gamble_loss",
+                )
+                embed = Embeds.blackjack_end(
+                    player_hand=self.player_hand,
+                    dealer_hand=self.dealer_hand,
+                    player_total=player_total,
+                    dealer_total=dealer_total,
+                    result=result,
+                    amount=self.amount,
+                    payout=max(0, payout),
+                    wallet=int(wallet_data["wallet"]),
+                )
+                if self.is_slash:
+                    channel = self.ctx_or_interaction.channel
+                else:
+                    channel = self.ctx_or_interaction.channel
+                if channel:
+                    await channel.send(embed=embed)
             except Exception:
                 pass
 
@@ -266,6 +317,7 @@ class Gambling(commands.Cog):
         await self._coinflip(ctx, choice=choice, amount_str=amount, is_slash=False)
 
     async def _coinflip(self, ctx_or_interaction: Any, choice: str, amount_str: str, is_slash: bool) -> None:
+        await _defer(ctx_or_interaction, is_slash)
         author = ctx_or_interaction.user if is_slash else ctx_or_interaction.author
 
         if choice.lower() not in ("heads", "tails"):
@@ -282,11 +334,6 @@ class Gambling(commands.Cog):
         if amount > wallet:
             return await _respond(ctx_or_interaction, Embeds.error(f"Insufficient funds. Wallet: ¥{wallet:,}."), is_slash)
 
-        result = random.choice(["heads", "tails"])
-        won = (choice.lower() == result) and (random.random() < COINFLIP_WIN_CHANCE / 0.5)
-        # Cleaner approach: win if choice matches AND random roll passes win chance
-        won = (choice.lower() == result) and (random.random() < 0.98)
-        # Simplest correct approach:
         won = random.random() < COINFLIP_WIN_CHANCE
         result = choice.lower() if won else ("tails" if choice.lower() == "heads" else "heads")
 
@@ -320,6 +367,7 @@ class Gambling(commands.Cog):
         await self._slots(ctx, amount_str=amount, is_slash=False)
 
     async def _slots(self, ctx_or_interaction: Any, amount_str: str, is_slash: bool) -> None:
+        await _defer(ctx_or_interaction, is_slash)
         author = ctx_or_interaction.user if is_slash else ctx_or_interaction.author
 
         user_data = await db.get_or_create_user(author.id)
@@ -367,6 +415,7 @@ class Gambling(commands.Cog):
         await self._blackjack(ctx, amount_str=amount, is_slash=False)
 
     async def _blackjack(self, ctx_or_interaction: Any, amount_str: str, is_slash: bool) -> None:
+        await _defer(ctx_or_interaction, is_slash)
         author = ctx_or_interaction.user if is_slash else ctx_or_interaction.author
 
         user_data = await db.get_or_create_user(author.id)
@@ -460,6 +509,7 @@ class Gambling(commands.Cog):
         await self._guess_start(ctx, mode=mode, amount_str=amount, is_slash=False)
 
     async def _guess_start(self, ctx_or_interaction: Any, mode: str, amount_str: str, is_slash: bool) -> None:
+        await _defer(ctx_or_interaction, is_slash)
         author = ctx_or_interaction.user if is_slash else ctx_or_interaction.author
 
         if mode not in GUESS_MODES:
@@ -598,6 +648,12 @@ class GuessModal(discord.ui.Modal, title="Enter your guess"):
         )
         await interaction.response.send_message(embed=embed)
 
+
+
+async def _defer(ctx_or_interaction: Any, is_slash: bool, ephemeral: bool = False) -> None:
+    """Defer a slash interaction immediately to extend the 3-second response window."""
+    if is_slash and not ctx_or_interaction.response.is_done():
+        await ctx_or_interaction.response.defer(ephemeral=ephemeral)
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Gambling(bot))

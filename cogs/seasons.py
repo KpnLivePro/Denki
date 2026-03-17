@@ -36,6 +36,12 @@ async def _respond(
         await ctx_or_interaction.reply(embed=embed)
 
 
+
+async def _defer(ctx_or_interaction: Any, is_slash: bool, ephemeral: bool = False) -> None:
+    """Defer a slash interaction immediately to extend the 3-second response window."""
+    if is_slash and not ctx_or_interaction.response.is_done():
+        await ctx_or_interaction.response.defer(ephemeral=ephemeral)
+
 async def run_season_end(bot: commands.Bot, season: dict) -> None:
     """
     Core season end logic. Called by the background task or sudo /season end.
@@ -103,6 +109,12 @@ async def _process_guild_season_end(
         if bonus > 0:
             await db.update_wallet(uid, bonus)
             await db.log_transaction(0, uid, bonus, "season_bonus")
+            # Credit bonus to total_earned on the bank record so stats are accurate
+            season_bank = await db.get_bank(uid, guild_id, season_id)
+            if season_bank:
+                db.supabase.table("banks").update({
+                    "total_earned": int(season_bank["total_earned"]) + bonus
+                }).eq("bank_id", season_bank["bank_id"]).execute()
             bonuses[uid] = bonus
 
         # Resolve display name
@@ -120,9 +132,8 @@ async def _process_guild_season_end(
         new_tier = int(updated["tier"])
         await notify_tier_change(bot, guild_id, new_tier=new_tier, won=True)
     else:
-        # Non-global guilds don't earn streak wins — reset if they had one
-        guild_data_check = await db.get_guild(guild_id)
-        if guild_data_check and int(guild_data_check.get("wins", 0)) > 0:
+        # Non-global guilds don't participate in win streaks; only reset if they somehow had wins
+        if guild_data and int(guild_data.get("wins", 0)) > 0:
             await db.reset_guild_wins(guild_id)
             await notify_tier_change(bot, guild_id, new_tier=1, won=False)
 
@@ -161,9 +172,11 @@ class Seasons(commands.Cog):
                 return
 
             end = datetime.fromisoformat(season["end"])
+            if end.tzinfo is None:
+                end = end.replace(tzinfo=timezone.utc)
             now = datetime.now(timezone.utc)
 
-            if now >= end.replace(tzinfo=timezone.utc):
+            if now >= end:
                 logger.info(f"Season {season['season_id']} has expired — running season end")
                 await run_season_end(self.bot, season)
         except Exception as e:
@@ -184,6 +197,7 @@ class Seasons(commands.Cog):
         await self._season(ctx, is_slash=False)
 
     async def _season(self, ctx_or_interaction: Any, is_slash: bool) -> None:
+        await _defer(ctx_or_interaction, is_slash)
         season = await db.get_active_season()
         if not season:
             return await _respond(

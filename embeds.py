@@ -376,6 +376,8 @@ class Embeds:
     @staticmethod
     def season_info(season: dict, vault_total: int) -> discord.Embed:
         end = datetime.fromisoformat(season["end"])
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
         now = datetime.now(timezone.utc)
         days_left = max(0, math.ceil((end - now).total_seconds() / 86400))
         embed = discord.Embed(
@@ -548,7 +550,10 @@ class Embeds:
 
     @staticmethod
     def season_start(season: dict) -> discord.Embed:
-        end_ts = int(datetime.fromisoformat(season["end"]).timestamp())
+        end_ts_raw = datetime.fromisoformat(season["end"])
+        if end_ts_raw.tzinfo is None:
+            end_ts_raw = end_ts_raw.replace(tzinfo=timezone.utc)
+        end_ts = int(end_ts_raw.timestamp())
         embed = discord.Embed(
             description=f"> `🌸` *A new season has begun — **{season['name']}***",
             color=get_color(),
@@ -652,3 +657,90 @@ class Embeds:
             embed.add_field(name="`ℹ️` Notes", value=f"> *{notes}*", inline=False)
         embed.set_footer(text="<required>  [optional]  •  Prefix: !d  •  Slash: /")
         return embed
+
+
+
+# ── Pagination ────────────────────────────────────────────────────────────────
+
+class PaginatorView(discord.ui.View):
+    """
+    Generic reusable paginator for any list of embeds.
+    Buttons follow the bot symbol scheme:  «  ✕  ↺  »
+
+    Usage from any cog:
+        from embeds import PaginatorView, Embeds
+
+        pages = [Embeds.base(f"> page {i}") for i in range(5)]
+        view  = PaginatorView(pages=pages, owner_id=ctx.author.id)
+        await ctx.reply(embed=pages[0], view=view)
+
+    For a refreshable paginator, subclass and override _rebuild_pages():
+        class MyView(PaginatorView):
+            async def _rebuild_pages(self) -> list[discord.Embed]:
+                rows = await db.get_something()
+                return build_pages(rows)
+    """
+
+    def __init__(
+        self,
+        pages: list[discord.Embed],
+        owner_id: int,
+        timeout: int = 120,
+    ) -> None:
+        super().__init__(timeout=timeout)
+        self.pages    = pages
+        self.owner_id = owner_id
+        self.index    = 0
+        self._sync_buttons()
+
+    def _sync_buttons(self) -> None:
+        """Disable prev/next when at the boundary."""
+        self.btn_prev.disabled = self.index == 0
+        self.btn_next.disabled = self.index >= len(self.pages) - 1
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                embed=Embeds.error("Only the command author can use these controls."),
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def _edit(self, interaction: discord.Interaction) -> None:
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.pages[self.index], view=self)
+
+    async def _rebuild_pages(self) -> list[discord.Embed]:
+        """
+        Override in subclasses to refresh page content on ↺.
+        Default: returns the existing pages unchanged.
+        """
+        return self.pages
+
+    @discord.ui.button(label="«", style=discord.ButtonStyle.secondary)
+    async def btn_prev(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        self.index -= 1
+        await self._edit(interaction)
+
+    @discord.ui.button(label="✕", style=discord.ButtonStyle.secondary)
+    async def btn_close(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        self.stop()
+        await interaction.response.edit_message(view=None)
+
+    @discord.ui.button(label="↺", style=discord.ButtonStyle.secondary)
+    async def btn_refresh(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        self.pages = await self._rebuild_pages()
+        self.index = min(self.index, len(self.pages) - 1)
+        await self._edit(interaction)
+
+    @discord.ui.button(label="»", style=discord.ButtonStyle.secondary)
+    async def btn_next(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        self.index += 1
+        await self._edit(interaction)
+
+    async def on_timeout(self) -> None:
+        """Disable all buttons when the view expires."""
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True

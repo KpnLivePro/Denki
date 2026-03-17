@@ -359,13 +359,13 @@ async def add_investment(user_id: int, guild_id: int, season_id: int, amount: in
     """
     Move amount from users.wallet into banks.invested.
     Deducts from wallet first — raises ValueError if wallet is insufficient.
+    total_earned is only updated when season bonuses are paid out, not on invest.
     """
     try:
         await update_wallet(user_id, -amount)
         bank = await get_or_create_bank(user_id, guild_id, season_id)
         res = supabase.table("banks").update({
             "invested": int(bank["invested"]) + amount,
-            "total_earned": int(bank["total_earned"]) + amount,
         }).eq("bank_id", bank["bank_id"]).execute()
         logger.info(f"User {user_id} invested ¥{amount:,} in guild {guild_id} season {season_id}")
         return _row(res.data[0])
@@ -429,7 +429,11 @@ async def get_cooldown(user_id: int, cooldown_type: str) -> Optional[datetime]:
         if res.data:
             row = _row(res.data[0])
             raw: str = str(row["last_used"])
-            return datetime.fromisoformat(raw)
+            dt = datetime.fromisoformat(raw)
+            # Ensure timezone-aware
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
         return None
     except Exception as e:
         logger.error(f"get_cooldown({user_id}, {cooldown_type}): {e}")
@@ -824,8 +828,8 @@ async def open_server_shop(guild_id: int, season_id: int) -> dict[str, Any]:
     Open a server shop by deducting SHOP_OPEN_COST from the guild's vault
     and setting guildconfig.shop_enabled = True.
 
-    Vault total is the sum of all banks.invested for this guild/season.
-    We deduct the cost from the top investor's bank record to keep accounting clean.
+    The cost is deducted proportionally from ALL investors' bank records
+    so no single investor is unfairly charged the full amount.
 
     Raises ValueError if:
     - Shop is already open
@@ -843,21 +847,25 @@ async def open_server_shop(guild_id: int, season_id: int) -> dict[str, Any]:
                 f"Insufficient vault funds. Need ¥{SHOP_OPEN_COST:,} — vault has ¥{vault_total:,}."
             )
 
-        # Deduct cost from the top investor's bank record
-        top = await get_top_investors(guild_id, season_id, limit=1)
-        if not top:
+        # Fetch all investors for proportional deduction
+        res = supabase.table("banks").select("*").eq("guild_id", guild_id).eq("season_id", season_id).gt("invested", 0).execute()
+        investor_rows = _rows(res.data)
+        if not investor_rows:
             raise ValueError("No investors found in this season's vault.")
 
-        top_user_id: int = int(top[0]["user_id"])
-        bank = await get_or_create_bank(top_user_id, guild_id, season_id)
-        new_invested: int = int(bank["invested"]) - SHOP_OPEN_COST
-
-        if new_invested < 0:
-            raise ValueError("Top investor's balance is insufficient to cover the shop cost.")
-
-        supabase.table("banks").update({
-            "invested": new_invested
-        }).eq("bank_id", bank["bank_id"]).execute()
+        # Deduct proportionally — each investor loses (their_share / vault_total) * SHOP_OPEN_COST
+        remaining_cost = SHOP_OPEN_COST
+        for i, row in enumerate(investor_rows):
+            bank_id   = int(row["bank_id"])
+            invested  = int(row["invested"])
+            # Last investor absorbs rounding remainder
+            if i == len(investor_rows) - 1:
+                share = remaining_cost
+            else:
+                share = round(SHOP_OPEN_COST * invested / vault_total)
+                remaining_cost -= share
+            new_invested = max(0, invested - share)
+            supabase.table("banks").update({"invested": new_invested}).eq("bank_id", bank_id).execute()
 
         # Enable shop in guild config
         config_res = supabase.table("guildconfig").update({

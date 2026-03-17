@@ -302,8 +302,9 @@ class JoinModal(discord.ui.Modal, title="Join Blacktea"):
         # Deduct bet immediately
         await db.update_wallet(interaction.user.id, -bet)
 
-        member = interaction.guild.get_member(interaction.user.id) or interaction.user
-        player = BlackteaPlayer(member=member, bet=bet)  # type: ignore[arg-type]
+        guild  = interaction.guild
+        member = guild.get_member(interaction.user.id) if guild else None
+        player = BlackteaPlayer(member=member or interaction.user, bet=bet)  # type: ignore[arg-type]
         self.game.players.append(player)
         _active_users[interaction.user.id] = self.game.channel.id
 
@@ -333,10 +334,13 @@ async def run_game(game: BlackteaGame, bot: commands.Bot) -> None:
 
     # Update lobby to show game starting
     if game.lobby_msg:
-        await game.lobby_msg.edit(
-            embed=Embeds.base(f"> `🍵` *Blacktea is starting with {len(game.players)} players!*"),
-            view=None,
-        )
+        try:
+            await game.lobby_msg.edit(
+                embed=Embeds.base(f"> `🍵` *Blacktea is starting with {len(game.players)} players!*"),
+                view=None,
+            )
+        except discord.HTTPException:
+            pass
 
     await asyncio.sleep(2)
 
@@ -346,7 +350,10 @@ async def run_game(game: BlackteaGame, bot: commands.Bot) -> None:
         # Fetch word for this round
         word = await _fetch_round_word(game)
         if not word:
-            await game.channel.send(embed=Embeds.error("Failed to fetch a word — skipping round."))
+            try:
+                await game.channel.send(embed=Embeds.error("Failed to fetch a word — skipping round."))
+            except discord.HTTPException:
+                pass
             continue
 
         game.current_word = word
@@ -359,11 +366,23 @@ async def run_game(game: BlackteaGame, bot: commands.Bot) -> None:
             p.valid    = False
 
         # Build challenge display
-        challenge, hint = _build_challenge(game.mode, word)
+        if game.mode == "guess":
+            challenge, hint = await _build_guess_challenge(word)
+        else:
+            challenge, hint = _build_challenge(game.mode, word)
 
-        # Post round embed
-        round_embed = game.round_embed(challenge, hint)
-        game.round_msg = await game.channel.send(embed=round_embed)
+        # Post round embed — cancel game if we can't send (e.g. lost permissions)
+        try:
+            round_embed = game.round_embed(challenge, hint)
+            game.round_msg = await game.channel.send(embed=round_embed)
+        except discord.Forbidden:
+            logger.warning(f"Blacktea: lost send permissions in channel {game.channel.id} — cancelling game")
+            await _cancel_game(game, reason="I lost permission to send messages in this channel.")
+            return
+        except discord.HTTPException as e:
+            logger.error(f"Blacktea: failed to send round embed: {e}")
+            await _cancel_game(game, reason="A network error occurred. Bets have been refunded.")
+            return
 
         # Listen for answers
         await _collect_answers(game, bot, word)
@@ -371,16 +390,22 @@ async def run_game(game: BlackteaGame, bot: commands.Bot) -> None:
         # Score the round
         results = await _score_round(game, word)
 
-        # Show results
-        await game.channel.send(embed=game.results_embed(results))
+        # Show results — best-effort, don't crash if this fails
+        try:
+            await game.channel.send(embed=game.results_embed(results))
+        except discord.HTTPException:
+            pass
 
         # Check eliminations
         eliminated = [p for p in game.alive_players if p.lives == 0]
         if eliminated:
             names = ", ".join(p.member.display_name for p in eliminated)
-            await game.channel.send(
-                embed=Embeds.base(f"> `💀` *{names} {'has' if len(eliminated) == 1 else 'have'} been eliminated!*")
-            )
+            try:
+                await game.channel.send(
+                    embed=Embeds.base(f"> `💀` *{names} {'has' if len(eliminated) == 1 else 'have'} been eliminated!*")
+                )
+            except discord.HTTPException:
+                pass
 
         await asyncio.sleep(3)
 
@@ -486,11 +511,11 @@ async def _score_round(
 
         # Validate based on mode
         if game.mode == "scramble":
-            # Word must exist in dictionary AND contain all letters of target
+            # Valid if: the answer exists in the dictionary AND uses exactly the letters of the target word
             target_letters = sorted(word.lower())
             answer_letters = sorted(answer.lower())
-            letters_ok = all(l in answer_letters for l in target_letters)
-            if letters_ok and len(answer) >= 3:
+            letters_match = (answer_letters == target_letters)
+            if letters_match and len(answer) >= 3:
                 valid = await validate_word(answer)
             else:
                 valid = False
@@ -520,9 +545,12 @@ async def _end_game(game: BlackteaGame) -> None:
         # Everyone eliminated simultaneously — refund all
         for p in game.players:
             await db.update_wallet(p.member.id, p.bet)
-        await game.channel.send(embed=Embeds.base(
-            "> `🍵` *Everyone was eliminated! All bets have been refunded.*"
-        ))
+        try:
+            await game.channel.send(embed=Embeds.base(
+                "> `🍵` *Everyone was eliminated! All bets have been refunded.*"
+            ))
+        except discord.HTTPException:
+            pass
     elif len(alive) == 1:
         winner = alive[0]
         await db.update_wallet(winner.member.id, pot)
@@ -536,7 +564,10 @@ async def _end_game(game: BlackteaGame) -> None:
             f"> Prize: `¥{pot:,}`\n"
             f"> Rounds played: `{game.round}`"
         )
-        await game.channel.send(embed=embed)
+        try:
+            await game.channel.send(embed=embed)
+        except discord.HTTPException:
+            pass
     else:
         # Multiple survivors — split pot proportionally
         total_bets = sum(p.bet for p in alive)
@@ -551,7 +582,10 @@ async def _end_game(game: BlackteaGame) -> None:
             f"> `🤝` *Blacktea ends in a tie!*\n\n"
             + "\n".join(embed_lines)
         )
-        await game.channel.send(embed=embed)
+        try:
+            await game.channel.send(embed=embed)
+        except discord.HTTPException:
+            pass
 
     game.finished = True
     await _cleanup_game(game)
@@ -562,10 +596,13 @@ async def _cancel_game(game: BlackteaGame, reason: str) -> None:
     for p in game.players:
         await db.update_wallet(p.member.id, p.bet)
 
-    await game.channel.send(embed=Embeds.base(
-        f"> `❌` *Blacktea cancelled — {reason}*\n"
-        f"> All bets have been refunded."
-    ))
+    try:
+        await game.channel.send(embed=Embeds.base(
+            f"> `❌` *Blacktea cancelled — {reason}*\n"
+            f"> All bets have been refunded."
+        ))
+    except discord.HTTPException:
+        pass
     await _cleanup_game(game)
 
 
@@ -607,6 +644,8 @@ class Blacktea(commands.Cog):
         if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
             return
 
+        guild = interaction.guild  # narrowed: not None past this point
+
         # Validate inputs
         if min_bet < 10:
             return await interaction.response.send_message(
@@ -633,9 +672,22 @@ class Blacktea(commands.Cog):
                 embed=Embeds.error("You're already in an active game."), ephemeral=True
             )
 
-        member = interaction.guild.get_member(interaction.user.id)
+        member = guild.get_member(interaction.user.id)
         if not member:
             return
+
+        # Check bot has Send Messages + Embed Links in this channel before starting
+        bot_member = guild.get_member(interaction.client.user.id) if interaction.client.user else None
+        if bot_member:
+            perms = interaction.channel.permissions_for(bot_member)
+            if not perms.send_messages or not perms.embed_links:
+                return await interaction.response.send_message(
+                    embed=Embeds.error(
+                        "I don't have permission to send messages or embeds in this channel.\n"
+                        "> Please grant **Send Messages** and **Embed Links** to run Blacktea here."
+                    ),
+                    ephemeral=True,
+                )
 
         game = BlackteaGame(
             channel=interaction.channel,
