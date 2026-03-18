@@ -13,6 +13,7 @@ WORKDIR /app
 # Clean up apt cache after to keep image size down
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
+    g++ \
     libc-dev \
     && rm -rf /var/lib/apt/lists/*
 
