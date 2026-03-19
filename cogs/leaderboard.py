@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -12,6 +11,8 @@ import db
 from embeds import Embeds
 
 logger = logging.getLogger("denki.leaderboard")
+
+GLOBAL_MIN_MEMBERS = 100
 
 
 async def _respond(
@@ -47,19 +48,19 @@ async def _build_name_map(bot: commands.Bot, guild: discord.Guild, rows: list[di
 
 
 class Leaderboard(commands.Cog):
-    """Leaderboard commands — server, investors, global."""
+    """Leaderboard + global enrolment commands."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    # /leaderboard slash with board choice
+    # ── /leaderboard ─────────────────────────────────────────────────────────
 
     @app_commands.command(name="leaderboard", description="View the Denki leaderboard.")
     @app_commands.describe(board="Which leaderboard to view")
     @app_commands.choices(board=[
-        app_commands.Choice(name="Server — top richest in this server",      value="server"),
-        app_commands.Choice(name="Investors — top investors this season",     value="investors"),
-        app_commands.Choice(name="Global — top richest across all servers",  value="global"),
+        app_commands.Choice(name="Server — top richest in this server",           value="server"),
+        app_commands.Choice(name="Investors — top investors this season",          value="investors"),
+        app_commands.Choice(name="Global — top enrolled servers by ¥ Yen earned", value="global"),
     ])
     async def leaderboard_slash(self, interaction: discord.Interaction, board: str) -> None:
         if board == "server":
@@ -92,8 +93,6 @@ class Leaderboard(commands.Cog):
     async def lb_global_prefix(self, ctx: commands.Context[Any]) -> None:
         await self._leaderboard_global(ctx, is_slash=False)
 
-    # Top-level short aliases
-
     @commands.command(name="lbs")
     async def lbs(self, ctx: commands.Context[Any]) -> None:
         await self._leaderboard_server(ctx, is_slash=False)
@@ -106,7 +105,109 @@ class Leaderboard(commands.Cog):
     async def lbg(self, ctx: commands.Context[Any]) -> None:
         await self._leaderboard_global(ctx, is_slash=False)
 
-    # ── Server leaderboard ────────────────────────────────────────────────────
+    # ── /global group ─────────────────────────────────────────────────────────
+
+    global_group = app_commands.Group(
+        name="global",
+        description="Global leaderboard enrolment commands.",
+    )
+
+    @global_group.command(name="enrol", description="Enrol your server in the global leaderboard. Requires 100+ members. Admin only.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def global_enrol(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild:
+            return
+
+        guild = interaction.guild
+        member_count = guild.member_count or 0
+
+        if member_count < GLOBAL_MIN_MEMBERS:
+            needed = GLOBAL_MIN_MEMBERS - member_count
+            return await interaction.response.send_message(
+                embed=Embeds.error(
+                    f"Your server needs **{GLOBAL_MIN_MEMBERS}+ members** to join the global leaderboard.\n"
+                    f"> You currently have `{member_count}` members — `{needed}` more needed."
+                ),
+                ephemeral=True,
+            )
+
+        guild_data = await db.get_or_create_guild(guild.id)
+
+        if guild_data.get("global_enrolled"):
+            return await interaction.response.send_message(
+                embed=Embeds.info("Your server is already enrolled in the global leaderboard."),
+                ephemeral=True,
+            )
+
+        await db.enrol_guild_global(guild.id, guild.name)
+
+        await interaction.response.send_message(
+            embed=Embeds.success(
+                f"**{guild.name}** is now enrolled in the global leaderboard! 🌐\n\n"
+                f"> Run `/global invite` to add your server's invite link.\n"
+                f"> Your server will appear on `/leaderboard global` ranked by total ¥ Yen."
+            ),
+        )
+        logger.info("denki.global action=enrol guild_id=%d name=%r members=%d", guild.id, guild.name, member_count)
+
+    @global_group.command(name="invite", description="Set your server's invite link on the global leaderboard. Admin only.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def global_invite(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
+            return
+
+        guild = interaction.guild
+        guild_data = await db.get_guild(guild.id)
+
+        if not guild_data or not guild_data.get("global_enrolled"):
+            return await interaction.response.send_message(
+                embed=Embeds.error("Your server must be enrolled first. Run `/global enrol`."),
+                ephemeral=True,
+            )
+
+        try:
+            invite = await interaction.channel.create_invite(
+                max_age=0,
+                max_uses=0,
+                unique=False,
+                reason="Denki global leaderboard invite",
+            )
+            invite_url = invite.url
+        except discord.Forbidden:
+            return await interaction.response.send_message(
+                embed=Embeds.error(
+                    "I need **Create Invite** permission in this channel to generate a link."
+                ),
+                ephemeral=True,
+            )
+        except Exception as e:
+            logger.error("global_invite: failed for guild %d: %s", guild.id, e)
+            return await interaction.response.send_message(
+                embed=Embeds.error("Failed to create invite. Please try again."),
+                ephemeral=True,
+            )
+
+        await db.set_guild_invite(guild.id, invite_url)
+
+        await interaction.response.send_message(
+            embed=Embeds.success(
+                f"Invite link set for **{guild.name}**!\n\n"
+                f"> `{invite_url}`\n\n"
+                f"> This will appear as a clickable link on `/leaderboard global`."
+            ),
+        )
+        logger.info("denki.global action=invite guild_id=%d url=%s", guild.id, invite_url)
+
+    @global_enrol.error
+    @global_invite.error
+    async def global_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        if isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message(
+                embed=Embeds.error("You need **Administrator** permission to use this command."),
+                ephemeral=True,
+            )
+
+    # ── Leaderboard implementations ───────────────────────────────────────────
 
     async def _leaderboard_server(self, ctx_or_interaction: Any, is_slash: bool) -> None:
         guild = ctx_or_interaction.guild
@@ -119,7 +220,6 @@ class Leaderboard(commands.Cog):
                 is_slash,
             )
 
-        # Flatten nested users(wallet) join — Supabase may return dict or single-item list
         flat: list[dict] = []
         for row in rows:
             r = dict(row)
@@ -133,7 +233,6 @@ class Leaderboard(commands.Cog):
             flat.append(r)
 
         flat.sort(key=lambda x: int(x.get("wallet", 0)), reverse=True)
-
         name_map = await _build_name_map(self.bot, guild, flat)
 
         embed = Embeds.leaderboard(
@@ -144,8 +243,6 @@ class Leaderboard(commands.Cog):
             value_prefix="¥",
         )
         await _respond(ctx_or_interaction, embed, is_slash)
-
-    # ── Investors leaderboard ─────────────────────────────────────────────────
 
     async def _leaderboard_investors(self, ctx_or_interaction: Any, is_slash: bool) -> None:
         guild = ctx_or_interaction.guild
@@ -181,47 +278,32 @@ class Leaderboard(commands.Cog):
         )
         await _respond(ctx_or_interaction, embed, is_slash)
 
-    # ── Global leaderboard ────────────────────────────────────────────────────
-
     async def _leaderboard_global(self, ctx_or_interaction: Any, is_slash: bool) -> None:
-        guild = ctx_or_interaction.guild
-
-        guild_data = await db.get_guild(guild.id)
-        if not guild_data or not guild_data.get("global"):
+        rows = await db.get_global_leaderboard_guilds(limit=10)
+        if not rows:
             return await _respond(
                 ctx_or_interaction,
                 Embeds.error(
-                    "This server hasn't unlocked the global leaderboard yet.\n"
-                    "> You need **250+ members** to access it."
+                    "No servers have enrolled in the global leaderboard yet.\n"
+                    "> Admins can run `/global enrol` to join (requires 100+ members)."
                 ),
                 is_slash,
             )
 
-        rows = await db.get_leaderboard_global(limit=7)
-        if not rows:
-            return await _respond(
-                ctx_or_interaction,
-                Embeds.error("No global wallet data found yet."),
-                is_slash,
-            )
+        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+        lines = []
+        for i, row in enumerate(rows):
+            medal = medals[i] if i < len(medals) else f"`#{i+1}`"
+            name  = row["guild_name"]
+            invite = row.get("invite_url")
+            display = f"[{name}]({invite})" if invite else f"**{name}**"
+            lines.append(f"{medal} {display} — `¥{row['wallet_total']:,}`")
 
-        # Fetch all global users concurrently — they may not be in this guild's cache
-        user_objects: list[discord.User | None] = await asyncio.gather(
-            *[self._safe_fetch_user(int(row["user_id"])) for row in rows]
+        embed = discord.Embed(
+            description="> `🌐` *Global Leaderboard — Top Servers*\n\n" + "\n".join(lines),
+            color=0xCD7F32,
         )
-
-        name_map: dict[int, str] = {}
-        for row, user_obj in zip(rows, user_objects):
-            uid = int(row["user_id"])
-            name_map[uid] = user_obj.display_name if user_obj else f"User {uid}"
-
-        embed = Embeds.leaderboard(
-            title="Global — Richest Denki Players",
-            rows=rows,
-            name_map=name_map,
-            value_key="wallet",
-            value_prefix="¥",
-        )
+        embed.set_footer(text="Ranked by total ¥ Yen held by server members  •  /global enrol to join")
         await _respond(ctx_or_interaction, embed, is_slash)
 
     async def _safe_fetch_user(self, user_id: int) -> discord.User | None:

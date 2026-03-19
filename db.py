@@ -359,13 +359,13 @@ async def add_investment(user_id: int, guild_id: int, season_id: int, amount: in
     """
     Move amount from users.wallet into banks.invested.
     Deducts from wallet first — raises ValueError if wallet is insufficient.
-    total_earned is only updated when season bonuses are paid out, not on invest.
     """
     try:
         await update_wallet(user_id, -amount)
         bank = await get_or_create_bank(user_id, guild_id, season_id)
         res = supabase.table("banks").update({
             "invested": int(bank["invested"]) + amount,
+            "total_earned": int(bank["total_earned"]) + amount,
         }).eq("bank_id", bank["bank_id"]).execute()
         logger.info(f"User {user_id} invested ¥{amount:,} in guild {guild_id} season {season_id}")
         return _row(res.data[0])
@@ -429,11 +429,7 @@ async def get_cooldown(user_id: int, cooldown_type: str) -> Optional[datetime]:
         if res.data:
             row = _row(res.data[0])
             raw: str = str(row["last_used"])
-            dt = datetime.fromisoformat(raw)
-            # Ensure timezone-aware
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt
+            return datetime.fromisoformat(raw)
         return None
     except Exception as e:
         logger.error(f"get_cooldown({user_id}, {cooldown_type}): {e}")
@@ -818,6 +814,76 @@ async def get_leaderboard_global(limit: int = 7) -> list[dict[str, Any]]:
         raise
 
 
+
+
+async def enrol_guild_global(guild_id: int, guild_name: str) -> dict[str, Any]:
+    """Enrol a guild in the global leaderboard — sets global_enrolled=True and stores name."""
+    try:
+        res = supabase.table("guilds").update({
+            "global_enrolled": True,
+            "global": True,
+            "guild_name": guild_name,
+        }).eq("guild_id", guild_id).execute()
+        logger.info(f"Guild {guild_id} enrolled in global leaderboard")
+        return _row(res.data[0])
+    except Exception as e:
+        logger.error(f"enrol_guild_global({guild_id}): {e}")
+        raise
+
+
+async def set_guild_invite(guild_id: int, invite_url: str) -> dict[str, Any]:
+    """Store the invite URL for a guild on the global leaderboard."""
+    try:
+        res = supabase.table("guilds").update({
+            "invite_url": invite_url,
+        }).eq("guild_id", guild_id).execute()
+        logger.info(f"Guild {guild_id} invite set: {invite_url}")
+        return _row(res.data[0])
+    except Exception as e:
+        logger.error(f"set_guild_invite({guild_id}): {e}")
+        raise
+
+
+async def get_global_leaderboard_guilds(limit: int = 10) -> list[dict[str, Any]]:
+    """
+    Fetch top globally enrolled servers ranked by total wallet sum of their members.
+    Returns guild rows with their stored name, invite_url, and computed wallet_total.
+    """
+    try:
+        # Fetch all enrolled guilds
+        res = supabase.table("guilds").select("guild_id, guild_name, invite_url").eq("global_enrolled", True).execute()
+        guilds = _rows(res.data)
+        if not guilds:
+            return []
+
+        # For each guild, sum up the wallets of members who have a bank record in that guild
+        results = []
+        for guild in guilds:
+            gid = int(guild["guild_id"])
+            # Get all user_ids in this guild via banks
+            bank_res = supabase.table("banks").select("user_id").eq("guild_id", gid).execute()
+            user_ids = list({int(r["user_id"]) for r in (_rows(bank_res.data))})
+            if not user_ids:
+                wallet_total = 0
+            else:
+                # Sum wallets for those users
+                user_res = supabase.table("users").select("wallet").in_("user_id", user_ids).execute()
+                wallet_total = sum(int(r["wallet"]) for r in (_rows(user_res.data)))
+            results.append({
+                "guild_id": gid,
+                "guild_name": guild.get("guild_name") or f"Server {gid}",
+                "invite_url": guild.get("invite_url"),
+                "wallet_total": wallet_total,
+            })
+
+        # Sort by wallet_total descending
+        results.sort(key=lambda x: x["wallet_total"], reverse=True)
+        return results[:limit]
+    except Exception as e:
+        logger.error(f"get_global_leaderboard_guilds(): {e}")
+        raise
+
+
 # Shop management
 
 SHOP_OPEN_COST: int = 10_000
@@ -828,8 +894,8 @@ async def open_server_shop(guild_id: int, season_id: int) -> dict[str, Any]:
     Open a server shop by deducting SHOP_OPEN_COST from the guild's vault
     and setting guildconfig.shop_enabled = True.
 
-    The cost is deducted proportionally from ALL investors' bank records
-    so no single investor is unfairly charged the full amount.
+    Vault total is the sum of all banks.invested for this guild/season.
+    We deduct the cost from the top investor's bank record to keep accounting clean.
 
     Raises ValueError if:
     - Shop is already open
@@ -847,25 +913,21 @@ async def open_server_shop(guild_id: int, season_id: int) -> dict[str, Any]:
                 f"Insufficient vault funds. Need ¥{SHOP_OPEN_COST:,} — vault has ¥{vault_total:,}."
             )
 
-        # Fetch all investors for proportional deduction
-        res = supabase.table("banks").select("*").eq("guild_id", guild_id).eq("season_id", season_id).gt("invested", 0).execute()
-        investor_rows = _rows(res.data)
-        if not investor_rows:
+        # Deduct cost from the top investor's bank record
+        top = await get_top_investors(guild_id, season_id, limit=1)
+        if not top:
             raise ValueError("No investors found in this season's vault.")
 
-        # Deduct proportionally — each investor loses (their_share / vault_total) * SHOP_OPEN_COST
-        remaining_cost = SHOP_OPEN_COST
-        for i, row in enumerate(investor_rows):
-            bank_id   = int(row["bank_id"])
-            invested  = int(row["invested"])
-            # Last investor absorbs rounding remainder
-            if i == len(investor_rows) - 1:
-                share = remaining_cost
-            else:
-                share = round(SHOP_OPEN_COST * invested / vault_total)
-                remaining_cost -= share
-            new_invested = max(0, invested - share)
-            supabase.table("banks").update({"invested": new_invested}).eq("bank_id", bank_id).execute()
+        top_user_id: int = int(top[0]["user_id"])
+        bank = await get_or_create_bank(top_user_id, guild_id, season_id)
+        new_invested: int = int(bank["invested"]) - SHOP_OPEN_COST
+
+        if new_invested < 0:
+            raise ValueError("Top investor's balance is insufficient to cover the shop cost.")
+
+        supabase.table("banks").update({
+            "invested": new_invested
+        }).eq("bank_id", bank["bank_id"]).execute()
 
         # Enable shop in guild config
         config_res = supabase.table("guildconfig").update({
