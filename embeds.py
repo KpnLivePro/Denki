@@ -9,25 +9,16 @@ import discord
 
 import db
 
-# Default color when no active season exists — bronze
-DEFAULT_COLOR = 0xCD7F32
-
-# Global season color cache
+DEFAULT_COLOR  = 0xCD7F32
 _cached_color: int = DEFAULT_COLOR
 
 
 async def refresh_season_color() -> None:
-    """
-    Fetch the active season color from DB and update the global cache.
-    theme column stores the hex color string e.g. '#FF5733'.
-    Called on bot ready and whenever a season changes.
-    """
     global _cached_color
     try:
         season = await db.get_active_season()
         if season and season.get("theme"):
-            hex_str: str = str(season["theme"]).strip().lstrip("#")
-            _cached_color = int(hex_str, 16)
+            _cached_color = int(str(season["theme"]).strip().lstrip("#"), 16)
         else:
             _cached_color = DEFAULT_COLOR
     except Exception:
@@ -35,15 +26,10 @@ async def refresh_season_color() -> None:
 
 
 def get_color() -> int:
-    """Return the current cached season color."""
     return _cached_color
 
 
 def set_color(hex_str: str) -> None:
-    """
-    Set the cached season color from a hex string e.g. '#FF5733'.
-    Called by sudo season commands after updating the DB.
-    """
     global _cached_color
     try:
         _cached_color = int(hex_str.strip().lstrip("#"), 16)
@@ -51,17 +37,38 @@ def set_color(hex_str: str) -> None:
         _cached_color = DEFAULT_COLOR
 
 
+# ── Streak helpers ────────────────────────────────────────────────────────────
+
+def _streak_label(streak: int) -> str:
+    """Return a milestone label for display, or empty string if no milestone."""
+    if streak >= 30:
+        return "🔥 **30-day streak!**  `2x bonus`"
+    if streak >= 14:
+        return "🔥 **14-day streak!**  `1.5x bonus`"
+    if streak >= 7:
+        return "🔥 **7-day streak!**   `1.25x bonus`"
+    if streak >= 3:
+        return "🔥 **3-day streak!**   `1.1x bonus`"
+    return ""
+
+
+def _next_milestone(streak: int) -> str:
+    """Return a hint about the next streak milestone."""
+    if streak < 3:
+        return f"`{3 - streak}` more vote(s) for a **1.1x bonus**"
+    if streak < 7:
+        return f"`{7 - streak}` more vote(s) for a **1.25x bonus**"
+    if streak < 14:
+        return f"`{14 - streak}` more vote(s) for a **1.5x bonus**"
+    if streak < 30:
+        return f"`{30 - streak}` more vote(s) for a **2x bonus**"
+    return "You're at the max streak bonus! 🎉"
+
+
 class Embeds:
-    """
-    Central embed factory for Denki.
+    """Central embed factory for Denki."""
 
-    All embeds share the active season color.
-    Response types are indicated by emojis, not colors.
-    Format:
-        > `emoji` *message*
-    """
-
-    # Base
+    # ── Base ──────────────────────────────────────────────────────────────────
 
     @staticmethod
     def base(description: str, footer: Optional[str] = None) -> discord.Embed:
@@ -70,35 +77,23 @@ class Embeds:
             embed.set_footer(text=footer)
         return embed
 
-    # Feedback
+    # ── Feedback ──────────────────────────────────────────────────────────────
 
     @staticmethod
     def error(message: str) -> discord.Embed:
-        return discord.Embed(
-            description=f"> `❗` *{message}*",
-            color=get_color(),
-        )
+        return discord.Embed(description=f"> `❗` *{message}*", color=get_color())
 
     @staticmethod
     def success(message: str) -> discord.Embed:
-        return discord.Embed(
-            description=f"> `✅` *{message}*",
-            color=get_color(),
-        )
+        return discord.Embed(description=f"> `✅` *{message}*", color=get_color())
 
     @staticmethod
     def info(message: str) -> discord.Embed:
-        return discord.Embed(
-            description=f"> `ℹ️` *{message}*",
-            color=get_color(),
-        )
+        return discord.Embed(description=f"> `ℹ️` *{message}*", color=get_color())
 
     @staticmethod
     def warn_msg(message: str) -> discord.Embed:
-        return discord.Embed(
-            description=f"> `⚠️` *{message}*",
-            color=get_color(),
-        )
+        return discord.Embed(description=f"> `⚠️` *{message}*", color=get_color())
 
     @staticmethod
     def critical(error: BaseException | str) -> discord.Embed:
@@ -111,7 +106,7 @@ class Embeds:
             color=get_color(),
         )
 
-    # Economy
+    # ── Economy ───────────────────────────────────────────────────────────────
 
     @staticmethod
     def balance(
@@ -126,9 +121,9 @@ class Embeds:
             color=get_color(),
         )
         embed.set_thumbnail(url=user.display_avatar.url)
-        embed.add_field(name="`💴` Pocket", value=f"```¥{wallet:,}```", inline=True)
-        embed.add_field(name="`🏦` Server bank", value=f"```¥{bank_balance:,}```", inline=True)
-        embed.add_field(name="`📈` Invested", value=f"```¥{bank_invested:,}```", inline=True)
+        embed.add_field(name="`💴` Pocket",      value=f"```¥{wallet:,}```",        inline=True)
+        embed.add_field(name="`🏦` Server bank", value=f"```¥{bank_balance:,}```",  inline=True)
+        embed.add_field(name="`📈` Invested",    value=f"```¥{bank_invested:,}```", inline=True)
         embed.set_footer(text=f"Season: {season_name}")
         return embed
 
@@ -138,12 +133,9 @@ class Embeds:
         amount: int,
         wallet: int,
     ) -> discord.Embed:
-        embed = discord.Embed(
-            description="> `📅` *Daily reward claimed!*",
-            color=get_color(),
-        )
+        embed = discord.Embed(description="> `📅` *Daily reward claimed!*", color=get_color())
         embed.set_thumbnail(url=user.display_avatar.url)
-        embed.add_field(name="`💴` Earned", value=f"```¥{amount:,}```", inline=True)
+        embed.add_field(name="`💴` Earned",      value=f"```¥{amount:,}```", inline=True)
         embed.add_field(name="`👛` New balance", value=f"```¥{wallet:,}```", inline=True)
         return embed
 
@@ -159,7 +151,7 @@ class Embeds:
             color=get_color(),
         )
         embed.set_thumbnail(url=user.display_avatar.url)
-        embed.add_field(name="`💴` Earned", value=f"```¥{amount:,}```", inline=True)
+        embed.add_field(name="`💴` Earned",      value=f"```¥{amount:,}```", inline=True)
         embed.add_field(name="`👛` New balance", value=f"```¥{wallet:,}```", inline=True)
         return embed
 
@@ -207,7 +199,62 @@ class Embeds:
             color=get_color(),
         )
 
-    # Gambling
+    # ── Vote ──────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def vote_prompt(vote_url: str, current_streak: int = 0) -> discord.Embed:
+        if current_streak > 0:
+            streak_line = f"> 🔥 Current streak: `{current_streak}` day(s)  ·  {_next_milestone(current_streak)}\n"
+        else:
+            streak_line = ""
+        return discord.Embed(
+            description=(
+                f"> `🗳️` *You haven't voted yet!*\n\n"
+                f"> [**Click here to vote for Denki**]({vote_url})\n"
+                f"> Then run `/vote` again to claim your reward.\n\n"
+                f"{streak_line}"
+                f"> Base: `¥2,000`  ·  Weekend: `¥4,000`  ·  Streak bonuses apply\n"
+                f"> Cooldown: **12 hours**"
+            ),
+            color=get_color(),
+        )
+
+    @staticmethod
+    def vote_cooldown(remaining: str, vote_url: str) -> discord.Embed:
+        return discord.Embed(
+            description=(
+                f"> `⏳` *You already claimed your vote reward.*\n\n"
+                f"> Next claim available in `{remaining}`\n"
+                f"> [Vote again early]({vote_url}) — reward waits until your cooldown expires."
+            ),
+            color=get_color(),
+        )
+
+    @staticmethod
+    def vote_reward(
+        user: discord.User | discord.Member,
+        amount: int,
+        wallet: int,
+        streak: int,
+        is_weekend: bool,
+    ) -> discord.Embed:
+        weekend_note = "  ·  `2x weekend bonus!` 🎉" if is_weekend else ""
+        milestone    = _streak_label(streak)
+        next_hint    = _next_milestone(streak)
+
+        desc = f"> `🗳️` *Thanks for voting!{weekend_note}*"
+        if milestone:
+            desc += f"\n> {milestone}"
+
+        embed = discord.Embed(description=desc, color=get_color())
+        embed.set_thumbnail(url=user.display_avatar.url)
+        embed.add_field(name="`💴` Reward",      value=f"```¥{amount:,}```",     inline=True)
+        embed.add_field(name="`👛` New balance", value=f"```¥{wallet:,}```",     inline=True)
+        embed.add_field(name="`🔥` Vote streak", value=f"```{streak} day(s)```", inline=True)
+        embed.set_footer(text=f"{next_hint}  ·  Vote again in 12h")
+        return embed
+
+    # ── Gambling ──────────────────────────────────────────────────────────────
 
     @staticmethod
     def coinflip(
@@ -218,13 +265,13 @@ class Embeds:
         wallet: int,
     ) -> discord.Embed:
         outcome = "`✅` *You won!*" if won else "`❗` *You lost!*"
-        embed = discord.Embed(
+        embed   = discord.Embed(
             description=f"> `🪙` *Coinflip — {outcome}*",
             color=get_color(),
         )
-        embed.add_field(name="`🎯` Your call", value=f"```{choice}```", inline=True)
-        embed.add_field(name="`🪙` Result", value=f"```{result}```", inline=True)
-        embed.add_field(name="`💴` Bet", value=f"```¥{amount:,}```", inline=True)
+        embed.add_field(name="`🎯` Your call",   value=f"```{choice}```",    inline=True)
+        embed.add_field(name="`🪙` Result",      value=f"```{result}```",    inline=True)
+        embed.add_field(name="`💴` Bet",         value=f"```¥{amount:,}```", inline=True)
         embed.add_field(name="`👛` New balance", value=f"```¥{wallet:,}```", inline=True)
         return embed
 
@@ -238,16 +285,12 @@ class Embeds:
         wallet: int,
     ) -> discord.Embed:
         outcome = f"`✅` *You won ¥{payout:,}!*" if won else "`❗` *No match — you lost!*"
-        embed = discord.Embed(
+        embed   = discord.Embed(
             description=f"> `🎰` *Slots — {outcome}*",
             color=get_color(),
         )
-        embed.add_field(
-            name="`🎰` Reels",
-            value=f"```{'  '.join(reels)}```",
-            inline=False,
-        )
-        embed.add_field(name="`💴` Bet", value=f"```¥{amount:,}```", inline=True)
+        embed.add_field(name="`🎰` Reels", value=f"```{'  '.join(reels)}```", inline=False)
+        embed.add_field(name="`💴` Bet",   value=f"```¥{amount:,}```",        inline=True)
         if won:
             embed.add_field(name="`✖️` Multiplier", value=f"```{multiplier}x```", inline=True)
         embed.add_field(name="`👛` New balance", value=f"```¥{wallet:,}```", inline=True)
@@ -260,21 +303,14 @@ class Embeds:
         player_total: int,
         amount: int,
     ) -> discord.Embed:
-        embed = discord.Embed(
-            description="> `🃏` *Blackjack — your turn*",
-            color=get_color(),
-        )
+        embed = discord.Embed(description="> `🃏` *Blackjack — your turn*", color=get_color())
         embed.add_field(
             name=f"`🧑` Your hand ({player_total})",
             value=f"```{'  '.join(player_hand)}```",
             inline=False,
         )
-        embed.add_field(
-            name="`🤖` Dealer shows",
-            value=f"```{dealer_card}  🂠```",
-            inline=False,
-        )
-        embed.add_field(name="`💴` Bet", value=f"```¥{amount:,}```", inline=True)
+        embed.add_field(name="`🤖` Dealer shows", value=f"```{dealer_card}  🂠```", inline=False)
+        embed.add_field(name="`💴` Bet",           value=f"```¥{amount:,}```",      inline=True)
         embed.set_footer(text="Use the buttons to Hit or Stand")
         return embed
 
@@ -303,8 +339,8 @@ class Embeds:
             value=f"```{'  '.join(dealer_hand)}```",
             inline=False,
         )
-        embed.add_field(name="`💴` Bet", value=f"```¥{amount:,}```", inline=True)
-        embed.add_field(name="`💰` Payout", value=f"```¥{payout:,}```", inline=True)
+        embed.add_field(name="`💴` Bet",         value=f"```¥{amount:,}```", inline=True)
+        embed.add_field(name="`💰` Payout",      value=f"```¥{payout:,}```", inline=True)
         embed.add_field(name="`👛` New balance", value=f"```¥{wallet:,}```", inline=True)
         return embed
 
@@ -318,15 +354,15 @@ class Embeds:
         wallet: int,
     ) -> discord.Embed:
         outcome = f"`✅` *Correct — you won ¥{payout:,}!*" if won else f"`❗` *Wrong — the answer was `{answer}`!*"
-        embed = discord.Embed(
+        embed   = discord.Embed(
             description=f"> `🎲` *Guess ({mode}) — {outcome}*",
             color=get_color(),
         )
-        embed.add_field(name="`💴` Bet", value=f"```¥{amount:,}```", inline=True)
+        embed.add_field(name="`💴` Bet",         value=f"```¥{amount:,}```", inline=True)
         embed.add_field(name="`👛` New balance", value=f"```¥{wallet:,}```", inline=True)
         return embed
 
-    # Investing
+    # ── Investing ─────────────────────────────────────────────────────────────
 
     @staticmethod
     def invest(
@@ -336,14 +372,11 @@ class Embeds:
         vault_total: int,
         season_name: str,
     ) -> discord.Embed:
-        embed = discord.Embed(
-            description="> `📈` *Investment placed!*",
-            color=get_color(),
-        )
+        embed = discord.Embed(description="> `📈` *Investment placed!*", color=get_color())
         embed.set_thumbnail(url=user.display_avatar.url)
-        embed.add_field(name="`💴` Invested", value=f"```¥{amount:,}```", inline=True)
-        embed.add_field(name="`📊` Your total", value=f"```¥{total_invested:,}```", inline=True)
-        embed.add_field(name="`🏛️` Vault total", value=f"```¥{vault_total:,}```", inline=True)
+        embed.add_field(name="`💴` Invested",    value=f"```¥{amount:,}```",         inline=True)
+        embed.add_field(name="`📊` Your total",  value=f"```¥{total_invested:,}```", inline=True)
+        embed.add_field(name="`🏛️` Vault total", value=f"```¥{vault_total:,}```",    inline=True)
         embed.set_footer(text=f"Season: {season_name}")
         return embed
 
@@ -355,41 +388,40 @@ class Embeds:
         vault_total: int,
         top_investors: list[dict],
     ) -> discord.Embed:
-        embed = discord.Embed(
+        embed  = discord.Embed(
             description=f"> `🏛️` *{guild_name} — Season Vault*",
             color=get_color(),
         )
-        embed.add_field(name="`💰` Total pooled", value=f"```¥{vault_total:,}```", inline=True)
-        embed.add_field(name="`📅` Days remaining", value=f"```{days_remaining}```", inline=True)
+        embed.add_field(name="`💰` Total pooled",   value=f"```¥{vault_total:,}```", inline=True)
+        embed.add_field(name="`📅` Days remaining", value=f"```{days_remaining}```",  inline=True)
         medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣"]
-        lines = []
+        lines: list[str] = []
         for i, row in enumerate(top_investors):
-            medal = medals[i] if i < len(medals) else f"`#{i+1}`"
+            medal = medals[i] if i < len(medals) else f"`#{i + 1}`"
             lines.append(f"{medal} <@{row['user_id']}> — `¥{int(row['invested']):,}`")
         if lines:
             embed.add_field(name="`🏆` Top investors", value="\n".join(lines), inline=False)
         embed.set_footer(text=f"Season: {season_name}")
         return embed
 
-    # Season
+    # ── Season ────────────────────────────────────────────────────────────────
 
     @staticmethod
     def season_info(season: dict, vault_total: int) -> discord.Embed:
         end = datetime.fromisoformat(season["end"])
         if end.tzinfo is None:
             end = end.replace(tzinfo=timezone.utc)
-        now = datetime.now(timezone.utc)
-        days_left = max(0, math.ceil((end - now).total_seconds() / 86400))
+        days_left = max(0, math.ceil((end - datetime.now(timezone.utc)).total_seconds() / 86400))
         embed = discord.Embed(
             description=f"> `🌸` *Season: **{season['name']}***",
             color=get_color(),
         )
-        embed.add_field(name="`📅` Days left", value=f"```{days_left}```", inline=True)
-        embed.add_field(name="`🏛️` Vault total", value=f"```¥{vault_total:,}```", inline=True)
-        embed.add_field(name="`🗓️` Ends", value=f"<t:{int(end.timestamp())}:F>", inline=False)
+        embed.add_field(name="`📅` Days left",   value=f"```{days_left}```",            inline=True)
+        embed.add_field(name="`🏛️` Vault total", value=f"```¥{vault_total:,}```",       inline=True)
+        embed.add_field(name="`🗓️` Ends",        value=f"<t:{int(end.timestamp())}:F>", inline=False)
         return embed
 
-    # Leaderboard
+    # ── Leaderboard ───────────────────────────────────────────────────────────
 
     @staticmethod
     def leaderboard(
@@ -401,14 +433,14 @@ class Embeds:
         season_name: str = "",
     ) -> discord.Embed:
         medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣"]
-        lines = []
+        lines: list[str] = []
         for i, row in enumerate(rows):
-            medal = medals[i] if i < len(medals) else f"`#{i+1}`"
-            uid = int(row["user_id"])
-            name = name_map.get(uid, f"User {uid}")
-            val = int(row.get(value_key, 0))
+            medal = medals[i] if i < len(medals) else f"`#{i + 1}`"
+            uid   = int(row["user_id"])
+            name  = name_map.get(uid, f"User {uid}")
+            val   = int(row.get(value_key, 0))
             lines.append(f"{medal} **{name}** — `{value_prefix}{val:,}`")
-        body = "\n".join(lines) if lines else "*No data yet.*"
+        body  = "\n".join(lines) if lines else "*No data yet.*"
         embed = discord.Embed(
             description=f"> `🏆` *{title}*\n\n{body}",
             color=get_color(),
@@ -417,7 +449,7 @@ class Embeds:
             embed.set_footer(text=f"Season: {season_name}")
         return embed
 
-    # Shop
+    # ── Shop ──────────────────────────────────────────────────────────────────
 
     @staticmethod
     def shop(
@@ -430,34 +462,27 @@ class Embeds:
             color=get_color(),
         )
         if server_items:
-            lines = [
-                f"`{item['item_id']}` **{item['name']}** — `¥{item['price']:,}`\n> *{item.get('description') or 'No description'}*"
-                for item in server_items
-            ]
+            lines: list[str] = []
+            for item in server_items:
+                desc = item.get("description") or "No description"
+                lines.append(f"`{item['item_id']}` **{item['name']}** — `¥{item['price']:,}`\n> *{desc}*")
             embed.add_field(name="`🏠` Server items", value="\n".join(lines), inline=False)
         if global_items:
-            lines = [
-                f"`{item['item_id']}` **{item['name']}** — `¥{item['price']:,}`\n> *{item.get('description') or 'No description'}*"
-                for item in global_items
-            ]
+            lines = []
+            for item in global_items:
+                desc = item.get("description") or "No description"
+                lines.append(f"`{item['item_id']}` **{item['name']}** — `¥{item['price']:,}`\n> *{desc}*")
             embed.add_field(name="`🌐` Global items", value="\n".join(lines), inline=False)
         if not server_items and not global_items:
             embed.add_field(name="Empty", value="> *No items available.*", inline=False)
         return embed
 
     @staticmethod
-    def purchase(
-        item_name: str,
-        price: int,
-        wallet: int,
-    ) -> discord.Embed:
-        embed = discord.Embed(
-            description="> `🛍️` *Purchase successful!*",
-            color=get_color(),
-        )
-        embed.add_field(name="`📦` Item", value=f"```{item_name}```", inline=True)
-        embed.add_field(name="`💸` Paid", value=f"```¥{price:,}```", inline=True)
-        embed.add_field(name="`👛` New balance", value=f"```¥{wallet:,}```", inline=True)
+    def purchase(item_name: str, price: int, wallet: int) -> discord.Embed:
+        embed = discord.Embed(description="> `🛍️` *Purchase successful!*", color=get_color())
+        embed.add_field(name="`📦` Item",        value=f"```{item_name}```",  inline=True)
+        embed.add_field(name="`💸` Paid",        value=f"```¥{price:,}```",   inline=True)
+        embed.add_field(name="`👛` New balance", value=f"```¥{wallet:,}```",  inline=True)
         return embed
 
     @staticmethod
@@ -482,7 +507,7 @@ class Embeds:
                 )
         return embed
 
-    # Moderation
+    # ── Moderation ────────────────────────────────────────────────────────────
 
     @staticmethod
     def warn_issued(
@@ -494,7 +519,7 @@ class Embeds:
             description=f"> `⚠️` *Warning issued to **{user.display_name}***",
             color=get_color(),
         )
-        embed.add_field(name="`📋` Reason", value=f"```{reason}```", inline=False)
+        embed.add_field(name="`📋` Reason",     value=f"```{reason}```",         inline=False)
         embed.add_field(name="`🔢` Warn count", value=f"```{warn_count} / 3```", inline=True)
         if warn_count >= 3:
             embed.add_field(
@@ -510,7 +535,7 @@ class Embeds:
             description="> `⚠️` *You have received a Denki warning.*",
             color=get_color(),
         )
-        embed.add_field(name="`📋` Reason", value=f"```{reason}```", inline=False)
+        embed.add_field(name="`📋` Reason",   value=f"```{reason}```",         inline=False)
         embed.add_field(name="`🔢` Warnings", value=f"```{warn_count} / 3```", inline=True)
         embed.set_footer(text="Three warnings results in a permanent ban from Denki.")
         return embed
@@ -534,31 +559,27 @@ class Embeds:
         reason: str,
         wallet_snap: int,
     ) -> discord.Embed:
-        embed = discord.Embed(
-            description="> `📋` *New report filed*",
-            color=get_color(),
-        )
-        embed.add_field(name="`👤` Reported", value=f"```{reported} ({reported.id})```", inline=False)
-        embed.add_field(name="`🏠` Server", value=f"```{guild_name}```", inline=True)
-        embed.add_field(name="`👮` Reporter", value=f"```{reporter} ({reporter.id})```", inline=True)
-        embed.add_field(name="`📋` Reason", value=f"```{reason}```", inline=False)
-        embed.add_field(name="`👛` Wallet at time", value=f"```¥{wallet_snap:,}```", inline=True)
+        embed = discord.Embed(description="> `📋` *New report filed*", color=get_color())
+        embed.add_field(name="`👤` Reported",       value=f"```{reported} ({reported.id})```", inline=False)
+        embed.add_field(name="`🏠` Server",         value=f"```{guild_name}```",               inline=True)
+        embed.add_field(name="`👮` Reporter",       value=f"```{reporter} ({reporter.id})```", inline=True)
+        embed.add_field(name="`📋` Reason",         value=f"```{reason}```",                   inline=False)
+        embed.add_field(name="`👛` Wallet at time", value=f"```¥{wallet_snap:,}```",           inline=True)
         embed.set_footer(text=f"Use  !d warn {reported.id} <reason>  or  !d ban {reported.id} <reason>")
         return embed
 
-    # Notifications
+    # ── Notifications ─────────────────────────────────────────────────────────
 
     @staticmethod
     def season_start(season: dict) -> discord.Embed:
         end_ts_raw = datetime.fromisoformat(season["end"])
         if end_ts_raw.tzinfo is None:
             end_ts_raw = end_ts_raw.replace(tzinfo=timezone.utc)
-        end_ts = int(end_ts_raw.timestamp())
         embed = discord.Embed(
             description=f"> `🌸` *A new season has begun — **{season['name']}***",
             color=get_color(),
         )
-        embed.add_field(name="`🗓️` Ends", value=f"<t:{end_ts}:F>", inline=True)
+        embed.add_field(name="`🗓️` Ends", value=f"<t:{int(end_ts_raw.timestamp())}:F>", inline=True)
         embed.set_footer(text="Invest in the vault to compete for season bonuses.")
         return embed
 
@@ -570,13 +591,15 @@ class Embeds:
         bonuses: dict[int, int],
     ) -> discord.Embed:
         medals = ["🥇", "🥈", "🥉"]
-        lines = []
+        lines: list[str] = []
         for i, row in enumerate(top_investors[:3]):
-            uid = int(row["user_id"])
-            name = name_map.get(uid, f"User {uid}")
+            uid   = int(row["user_id"])
+            name  = name_map.get(uid, f"User {uid}")
             bonus = bonuses.get(uid, 0)
-            medal = medals[i] if i < len(medals) else f"`#{i+1}`"
-            lines.append(f"{medal} **{name}** — invested `¥{int(row['invested']):,}` — bonus `¥{bonus:,}`")
+            medal = medals[i] if i < len(medals) else f"`#{i + 1}`"
+            lines.append(
+                f"{medal} **{name}** — invested `¥{int(row['invested']):,}` — bonus `¥{bonus:,}`"
+            )
         embed = discord.Embed(
             description=f"> `🏁` *Season **{season['name']}** has ended!*",
             color=get_color(),
@@ -586,7 +609,7 @@ class Embeds:
         embed.set_footer(text="Season bonuses have been paid to wallets. A new season begins shortly.")
         return embed
 
-    # Help
+    # ── Help ──────────────────────────────────────────────────────────────────
 
     @staticmethod
     def help_home() -> discord.Embed:
@@ -597,34 +620,31 @@ class Embeds:
                 "> Your wallet is **global** — one balance, all servers.\n"
                 "> Every server runs a **30-day season** where you invest to win bonuses.\n\n"
                 "> `ℹ️` *Use `/help [module]` to view all commands in a module.*\n"
-                "> `ℹ️` *Use `/help [command]` to view details for a specific command.*\n\n"
+                "> `ℹ️` *Use `/help [command]` to look up a specific command.*\n\n"
                 "> **Modules**\n"
                 "> `economy`  `gambling`  `investing`  `season`\n"
-                "> `shop`  `leaderboard`  `admin`"
+                "> `shop`  `leaderboard`  `admin`  `tea`"
             ),
             color=get_color(),
         )
-        embed.set_footer(text="Prefix: !d  •  Slash: /  •  Hybrid commands support both")
+        embed.set_footer(text="Prefix: !d  ·  Slash: /  ·  Hybrid commands support both")
         return embed
 
     @staticmethod
     def help_module(module: str, commands: list[dict]) -> discord.Embed:
-        """commands: list of { name, aliases, usage, description }"""
-        lines = []
+        lines: list[str] = []
         for cmd in commands:
             aliases = "  ".join(f"`{a}`" for a in cmd.get("aliases", []))
-            usage = f"`{cmd['usage']}`"
-            desc = cmd["description"]
-            line = f"**{cmd['name']}** {usage}"
+            line    = f"**{cmd['name']}** `{cmd['usage']}`"
             if aliases:
-                line += f"  •  aliases: {aliases}"
-            line += f"\n> *{desc}*"
+                line += f"  ·  aliases: {aliases}"
+            line += f"\n> *{cmd['description']}*"
             lines.append(line)
         embed = discord.Embed(
             description=f"> `📖` *Module: **{module}***\n\n" + "\n\n".join(lines),
             color=get_color(),
         )
-        embed.set_footer(text="<required>  [optional]  •  Prefix: !d  •  Slash: /")
+        embed.set_footer(text="<required>  [optional]  ·  Prefix: !d  ·  Slash: /")
         return embed
 
     @staticmethod
@@ -655,31 +675,14 @@ class Embeds:
             )
         if notes:
             embed.add_field(name="`ℹ️` Notes", value=f"> *{notes}*", inline=False)
-        embed.set_footer(text="<required>  [optional]  •  Prefix: !d  •  Slash: /")
+        embed.set_footer(text="<required>  [optional]  ·  Prefix: !d  ·  Slash: /")
         return embed
-
 
 
 # ── Pagination ────────────────────────────────────────────────────────────────
 
 class PaginatorView(discord.ui.View):
-    """
-    Generic reusable paginator for any list of embeds.
-    Buttons follow the bot symbol scheme:  «  ✕  ↺  »
-
-    Usage from any cog:
-        from embeds import PaginatorView, Embeds
-
-        pages = [Embeds.base(f"> page {i}") for i in range(5)]
-        view  = PaginatorView(pages=pages, owner_id=ctx.author.id)
-        await ctx.reply(embed=pages[0], view=view)
-
-    For a refreshable paginator, subclass and override _rebuild_pages():
-        class MyView(PaginatorView):
-            async def _rebuild_pages(self) -> list[discord.Embed]:
-                rows = await db.get_something()
-                return build_pages(rows)
-    """
+    """Generic reusable paginator. Buttons: «  ✕  ↺  »"""
 
     def __init__(
         self,
@@ -694,7 +697,6 @@ class PaginatorView(discord.ui.View):
         self._sync_buttons()
 
     def _sync_buttons(self) -> None:
-        """Disable prev/next when at the boundary."""
         self.btn_prev.disabled = self.index == 0
         self.btn_next.disabled = self.index >= len(self.pages) - 1
 
@@ -712,10 +714,6 @@ class PaginatorView(discord.ui.View):
         await interaction.response.edit_message(embed=self.pages[self.index], view=self)
 
     async def _rebuild_pages(self) -> list[discord.Embed]:
-        """
-        Override in subclasses to refresh page content on ↺.
-        Default: returns the existing pages unchanged.
-        """
         return self.pages
 
     @discord.ui.button(label="«", style=discord.ButtonStyle.secondary)
@@ -740,7 +738,6 @@ class PaginatorView(discord.ui.View):
         await self._edit(interaction)
 
     async def on_timeout(self) -> None:
-        """Disable all buttons when the view expires."""
         for item in self.children:
             if isinstance(item, discord.ui.Button):
                 item.disabled = True

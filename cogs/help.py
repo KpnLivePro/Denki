@@ -8,10 +8,6 @@ from discord.ext import commands
 
 from embeds import Embeds
 
-# Command map — single source of truth for /help and !d help
-# Every command we are building is listed here grouped by module.
-# Each entry: { name, aliases, usage, description, examples, notes }
-
 COMMAND_MAP: dict[str, list[dict]] = {
     "economy": [
         {
@@ -44,7 +40,7 @@ COMMAND_MAP: dict[str, list[dict]] = {
             "usage": "/rob <user>",
             "description": "Attempt to steal ¥ Yen from another user's pocket. 2-hour cooldown.",
             "examples": ["/rob @user", "!d rob @user", "!d r @user"],
-            "notes": "40% success chance. Fail and you pay a fine. Can be disabled by admins.",
+            "notes": "40% base success chance. Fail and you pay a fine. Can be disabled by admins.",
         },
         {
             "name": "/pay",
@@ -53,6 +49,17 @@ COMMAND_MAP: dict[str, list[dict]] = {
             "description": "Send ¥ Yen from your pocket to another user. No fee.",
             "examples": ["/pay @user 500", "!d pay @user 500", "!d p @user 1000"],
             "notes": None,
+        },
+        {
+            "name": "/vote",
+            "aliases": ["!d vote"],
+            "usage": "/vote",
+            "description": "Vote for Denki on top.gg and claim a ¥ Yen reward. 12-hour cooldown.",
+            "examples": ["/vote", "!d vote"],
+            "notes": (
+                "Base reward: ¥2,000  ·  Weekend: ¥4,000  ·  Cannot be disabled by admins.\n"
+                "Streak bonuses: 3 days = 1.1x  ·  7 days = 1.25x  ·  14 days = 1.5x  ·  30 days = 2x"
+            ),
         },
     ],
     "gambling": [
@@ -70,7 +77,7 @@ COMMAND_MAP: dict[str, list[dict]] = {
             "usage": "/slots <amount>",
             "description": "Spin a 3-reel slot machine. Matching symbols pay out multipliers.",
             "examples": ["/slots 200", "!d slots 500", "!d sl all"],
-            "notes": "3 rare = 10x  •  3 common = 3x  •  2 match = 1.5x  •  no match = 0x",
+            "notes": "3 rare = 10x  ·  3 common = 3x  ·  2 match = 1.5x  ·  no match = 0x",
         },
         {
             "name": "/blackjack",
@@ -78,15 +85,15 @@ COMMAND_MAP: dict[str, list[dict]] = {
             "usage": "/blackjack <amount>",
             "description": "Play blackjack against the dealer. Get closer to 21 without busting.",
             "examples": ["/blackjack 500", "!d bj 1000"],
-            "notes": "Win = 1x  •  Blackjack = 1.5x  •  Dealer hits until 17.",
+            "notes": "Win = 1x  ·  Blackjack = 1.5x  ·  Dealer hits until 17.",
         },
         {
             "name": "/guess",
             "aliases": ["!d guess", "!d g"],
-            "usage": "/guess <number|letter> <amount>",
+            "usage": "/guess <mode> <amount>",
             "description": "Guess a number or letter to win a multiplied payout.",
-            "examples": ["/guess number 500", "/guess letter 200", "!d g number 100"],
-            "notes": "Number easy (1-10) = 8x  •  Number hard (1-50) = 30x  •  Letter (A-Z) = 20x",
+            "examples": ["/guess number_easy 500", "/guess letter 200", "!d g number_hard 100"],
+            "notes": "Number easy (1–10) = 8x  ·  Number hard (1–50) = 30x  ·  Letter (A–Z) = 20x",
         },
     ],
     "investing": [
@@ -148,7 +155,7 @@ COMMAND_MAP: dict[str, list[dict]] = {
             "usage": "/additem <name> <price> <type> [description] [role]",
             "description": "Add an item to your server shop. Admin only.",
             "examples": ["/additem VIP 5000 role VIP member access @VIPRole"],
-            "notes": "Types: `role` `pet`  •  Server shop must be open first.",
+            "notes": "Types: `role`  `pet`  ·  Server shop must be open first.",
         },
         {
             "name": "/removeitem",
@@ -158,57 +165,71 @@ COMMAND_MAP: dict[str, list[dict]] = {
             "examples": ["/removeitem 3"],
             "notes": "Item is soft-deleted — history is preserved.",
         },
+        {
+            "name": "/shopopen",
+            "aliases": ["!d shopopen", "!d sopen"],
+            "usage": "/shopopen",
+            "description": "Open a shop for your server. Costs ¥10,000 from the season vault. Admin only.",
+            "examples": ["/shopopen", "!d sopen"],
+            "notes": "One-time cost per season. Vault must have at least ¥10,000 pooled.",
+        },
     ],
     "leaderboard": [
         {
             "name": "/leaderboard server",
-            "aliases": ["!d lb server", "!d lbs", "!d l server"],
+            "aliases": ["!d lb server", "!d lbs"],
             "usage": "/leaderboard server",
             "description": "Top 7 richest wallet holders in this server.",
-            "examples": ["/leaderboard server", "!d lbs", "!d l server"],
+            "examples": ["/leaderboard server", "!d lbs"],
             "notes": "Available in all servers.",
         },
         {
             "name": "/leaderboard investors",
-            "aliases": ["!d lb investors", "!d lbi", "!d l investors"],
+            "aliases": ["!d lb investors", "!d lbi"],
             "usage": "/leaderboard investors",
             "description": "Top 7 investors in this server's current season vault.",
-            "examples": ["/leaderboard investors", "!d lbi", "!d l investors"],
+            "examples": ["/leaderboard investors", "!d lbi"],
             "notes": "Resets each season.",
         },
         {
             "name": "/leaderboard global",
-            "aliases": ["!d lb global", "!d lbg", "!d l global"],
+            "aliases": ["!d lb global", "!d lbg"],
             "usage": "/leaderboard global",
-            "description": "Top 7 richest players globally across all servers.",
+            "description": "Top enrolled servers ranked by total ¥ Yen held by their members.",
             "examples": ["/leaderboard global", "!d lbg"],
-            "notes": "Only available in servers with 250+ members.",
+            "notes": "Server must enrol via `/global enrol` (requires 100+ members).",
         },
-    ],
-    "setup": [
         {
-            "name": "/init",
+            "name": "/global enrol",
             "aliases": [],
-            "usage": "/init",
-            "description": "Step-by-step wizard to set up Denki for your server. Sets notification channel, role, and earn toggles.",
-            "examples": ["/init"],
-            "notes": "Administrator permission required. Ephemeral — only you can see it.",
+            "usage": "/global enrol",
+            "description": "Enrol your server in the global leaderboard. Requires 100+ members. Admin only.",
+            "examples": ["/global enrol"],
+            "notes": "One-time action per server. Enables your server to appear on `/leaderboard global`.",
         },
         {
-            "name": "/config",
-            "aliases": ["!d cfg"],
-            "usage": "/config",
-            "description": "View your current server configuration at any time.",
-            "examples": ["/config", "!d cfg"],
-            "notes": None,
+            "name": "/global invite",
+            "aliases": [],
+            "usage": "/global invite",
+            "description": "Set a permanent invite link shown on the global leaderboard. Admin only.",
+            "examples": ["/global invite"],
+            "notes": "Bot generates the invite automatically from the current channel.",
         },
     ],
     "admin": [
         {
+            "name": "/init",
+            "aliases": [],
+            "usage": "/init",
+            "description": "Step-by-step wizard to set up Denki for your server.",
+            "examples": ["/init"],
+            "notes": "Administrator permission required. Sets notification channel, role, and earn toggles.",
+        },
+        {
             "name": "/config",
             "aliases": ["!d config", "!d cfg"],
             "usage": "/config",
-            "description": "Configure Denki for your server — notification channel, role, and earn toggles.",
+            "description": "View your current server configuration at any time.",
             "examples": ["/config", "!d config"],
             "notes": "Administrator permission required.",
         },
@@ -216,9 +237,25 @@ COMMAND_MAP: dict[str, list[dict]] = {
             "name": "/earnsettings",
             "aliases": ["!d earnsettings"],
             "usage": "/earnsettings",
-            "description": "Choose which earning commands are enabled in your server. At least one must stay on.",
+            "description": "Choose which earning commands are enabled in your server.",
             "examples": ["/earnsettings", "!d earnsettings"],
-            "notes": "Options: daily / work / rob. All three cannot be disabled.",
+            "notes": "Options: daily / work / rob. All three cannot be disabled. `/vote` is always enabled.",
+        },
+        {
+            "name": "/setnotifchannel",
+            "aliases": ["!d setnotifchannel"],
+            "usage": "/setnotifchannel <channel>",
+            "description": "Set the channel for Denki season announcements. Admin only.",
+            "examples": ["/setnotifchannel #announcements"],
+            "notes": None,
+        },
+        {
+            "name": "/setnofifrole",
+            "aliases": ["!d setnofifrole"],
+            "usage": "/setnofifrole <role>",
+            "description": "Set the role to mention in Denki announcements. Admin only.",
+            "examples": ["/setnofifrole @Members"],
+            "notes": None,
         },
         {
             "name": "/denkireport",
@@ -226,28 +263,25 @@ COMMAND_MAP: dict[str, list[dict]] = {
             "usage": "/denkireport <user> <reason>",
             "description": "Report a user to the bot owner for review.",
             "examples": ["/denkireport @user exploiting the economy"],
-            "notes": "Report is logged and a DM is sent to the bot owner. Admins cannot ban users directly.",
+            "notes": "Report is logged and a DM is sent to the bot owner.",
         },
+    ],
+    "tea": [
         {
-            "name": "/shopopen",
-            "aliases": ["!d shopopen", "!d sopen"],
-            "usage": "/shopopen",
-            "description": "Open a shop for your server. Costs ¥10,000 from the season vault.",
-            "examples": ["/shopopen", "!d sopen"],
-            "notes": "One-time cost per season. Vault must have at least ¥10,000 pooled. Cost is shared proportionally across all investors.",
-        },
-        {
-            "name": "!d seasonset",
+            "name": "/tea",
             "aliases": [],
-            "usage": "!d seasonset <n> [#hex_color]",
-            "description": "Set the active season name and embed color. Bot owner only.",
-            "examples": ["!d seasonset \"Winter Arc\" #5B8CFF"],
-            "notes": "Prefix-only sudo command — bot owner only. Color must be a 6-digit hex e.g. #FF5733.",
+            "usage": "/tea <type> <min_bet> <max_players> <time_limit>",
+            "description": "Start a Tea word game in this channel. Up to 24 players compete with ¥ Yen on the line.",
+            "examples": ["/tea black 500 8 30", "/tea green 100 24 15"],
+            "notes": (
+                "Types: 🍵 Black · 🍃 Green · 🤍 White · 🔴 Red · 💙 Blue\n"
+                "Min bet: ¥10  ·  Max players: 2–24  ·  Time limit: 10–60s per round"
+            ),
         },
     ],
 }
 
-# Flat alias → command name lookup for /help <command>
+# Flat alias → (module, command) lookup
 _ALIAS_MAP: dict[str, tuple[str, dict]] = {}
 for _module, _cmds in COMMAND_MAP.items():
     for _cmd in _cmds:
@@ -268,13 +302,14 @@ class Help(commands.Cog):
         command="Look up a specific command by name",
     )
     @app_commands.choices(module=[
-        app_commands.Choice(name="Economy  —  balance, daily, work, rob, pay",          value="economy"),
-        app_commands.Choice(name="Gambling  —  coinflip, slots, blackjack, guess",       value="gambling"),
-        app_commands.Choice(name="Investing  —  invest, vault",                          value="investing"),
-        app_commands.Choice(name="Season  —  season info",                               value="season"),
-        app_commands.Choice(name="Shop  —  shop, buy, inventory, additem, removeitem",   value="shop"),
-        app_commands.Choice(name="Leaderboard  —  server, investors, global",            value="leaderboard"),
-        app_commands.Choice(name="Admin  —  config, earnsettings, denkireport",          value="admin"),
+        app_commands.Choice(name="Economy    —  balance, daily, work, rob, pay, vote",     value="economy"),
+        app_commands.Choice(name="Gambling   —  coinflip, slots, blackjack, guess",        value="gambling"),
+        app_commands.Choice(name="Investing  —  invest, vault",                            value="investing"),
+        app_commands.Choice(name="Season     —  season info",                              value="season"),
+        app_commands.Choice(name="Shop       —  shop, buy, inventory, additem, removeitem", value="shop"),
+        app_commands.Choice(name="Leaderboard — server, investors, global, enrol",        value="leaderboard"),
+        app_commands.Choice(name="Admin      —  config, earnsettings, init",               value="admin"),
+        app_commands.Choice(name="Tea        —  word game",                                value="tea"),
     ])
     async def help_slash(
         self,
@@ -293,26 +328,13 @@ class Help(commands.Cog):
     ) -> None:
         await self._send_help(ctx, module=module, command=command, is_slash=False)
 
-    async def _send_help(
-        self,
-        ctx_or_interaction,
-        module: Optional[str],
-        command: Optional[str],
-        is_slash: bool,
-    ) -> None:
-        # Resolve command lookup first — takes priority over module
+    async def _send_help(self, ctx_or_interaction, module: Optional[str], command: Optional[str], is_slash: bool) -> None:
         if command:
-            key = command.lower()
-            match = _ALIAS_MAP.get(key)
-            if not match:
-                # Try partial match
-                match = next(
-                    ((m, c) for k, (m, c) in _ALIAS_MAP.items() if key in k),
-                    None,
-                )
+            key   = command.lower()
+            match = _ALIAS_MAP.get(key) or next(((m, c) for k, (m, c) in _ALIAS_MAP.items() if key in k), None)
             if match:
                 _, cmd = match
-                embed = Embeds.help_command(
+                embed  = Embeds.help_command(
                     name=cmd["name"],
                     aliases=cmd.get("aliases", []),
                     usage=cmd["usage"],
@@ -323,14 +345,11 @@ class Help(commands.Cog):
             else:
                 embed = Embeds.error(f"Command `{command}` not found. Use `/help` to see all modules.")
         elif module:
-            key = module.lower()
-            cmds = COMMAND_MAP.get(key)
+            cmds = COMMAND_MAP.get(module.lower())
             if cmds:
-                embed = Embeds.help_module(module=key, commands=cmds)
+                embed = Embeds.help_module(module=module.lower(), commands=cmds)
             else:
-                embed = Embeds.error(
-                    f"Module `{module}` not found. Available: {', '.join(f'`{m}`' for m in COMMAND_MAP)}"
-                )
+                embed = Embeds.error(f"Module `{module}` not found. Available: {', '.join(f'`{m}`' for m in COMMAND_MAP)}")
         else:
             embed = Embeds.help_home()
 

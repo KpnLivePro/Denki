@@ -14,9 +14,6 @@ import embeds as embeds_module
 from embeds import Embeds
 
 # ── Logging ───────────────────────────────────────────────────────────────────
-# Structured for Azure container logs — stdout, no color, ISO timestamps.
-# Azure Monitor / Log Analytics picks these up via container stdout stream.
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -26,12 +23,13 @@ logging.basicConfig(
 logger = logging.getLogger("denki")
 
 # ── Config ────────────────────────────────────────────────────────────────────
-# All values injected as ACI environment variables — no .env file needed.
 
-TOKEN:    str = os.environ.get("DISCORD_TOKEN", "")
-OWNER_ID: int = int(os.environ.get("OWNER_ID", "0"))
-PREFIX:   str = "!d "
-INVITE:   str = "https://discord.com/oauth2/authorize?client_id=1422399195062734881&permissions=8&scope=bot+applications.commands"
+TOKEN:        str = os.environ.get("DISCORD_TOKEN", "")
+OWNER_ID:     int = int(os.environ.get("OWNER_ID", "0"))
+TOPGG_TOKEN:  str = os.environ.get("TOPGG_TOKEN", "")
+BOT_ID:       int = 1422399195062734881
+PREFIX:       str = "!d "
+INVITE:       str = "https://discord.com/oauth2/authorize?client_id=1422399195062734881&permissions=8&scope=bot+applications.commands"
 
 if not TOKEN:
     logger.critical("DISCORD_TOKEN is not set — cannot start.")
@@ -39,6 +37,9 @@ if not TOKEN:
 
 if not OWNER_ID:
     logger.warning("OWNER_ID is not set — sudo commands will not work.")
+
+if not TOPGG_TOKEN:
+    logger.warning("TOPGG_TOKEN is not set — /vote rewards will not work.")
 
 # ── Cogs ──────────────────────────────────────────────────────────────────────
 
@@ -69,6 +70,10 @@ bot = commands.Bot(
     owner_id=OWNER_ID,
     help_command=None,
 )
+
+# Attach top.gg config so cogs can access via self.bot
+bot.topgg_token = TOPGG_TOKEN  # type: ignore[attr-defined]
+bot.bot_id      = BOT_ID       # type: ignore[attr-defined]
 
 # ── Global checks ─────────────────────────────────────────────────────────────
 
@@ -104,10 +109,8 @@ async def on_ready() -> None:
     user_id   = bot.user.id   if bot.user else "unknown"
     user_name = str(bot.user) if bot.user else "unknown"
 
-    # Refresh season color cache from DB
     await embeds_module.refresh_season_color()
 
-    # Set presence
     await bot.change_presence(
         activity=discord.Activity(
             type=discord.ActivityType.watching,
@@ -115,7 +118,6 @@ async def on_ready() -> None:
         )
     )
 
-    # Sync slash commands
     try:
         synced = await bot.tree.sync()
         synced_count = len(synced)
@@ -123,10 +125,10 @@ async def on_ready() -> None:
         logger.error(f"Failed to sync slash commands: {e}")
         synced_count = 0
 
-    # Structured startup log — easy to parse in Azure Monitor
     logger.info("denki.startup bot=%s id=%s guilds=%d cogs=%d commands=%d",
         user_name, user_id, len(bot.guilds), len(COGS), synced_count)
     logger.info("denki.startup invite=%s", INVITE)
+    logger.info("denki.startup topgg_configured=%s", bool(TOPGG_TOKEN))
     logger.info("denki.startup status=ready")
 
 
