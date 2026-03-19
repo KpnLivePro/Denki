@@ -54,7 +54,7 @@ COGS: list[str] = [
     "cogs.admin",
     "cogs.sudo",
     "cogs.notifications",
-    "cogs.blacktea",
+    "cogs.tea",
 ]
 
 # ── Bot ───────────────────────────────────────────────────────────────────────
