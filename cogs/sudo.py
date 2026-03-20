@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import platform
+import re
 import sys
 import time
 from typing import Annotated, Any
@@ -18,15 +19,32 @@ from cogs.seasons import run_season_end
 
 logger = logging.getLogger("denki.sudo")
 
-# Module load time — used for uptime in !d sys
 _start_time: float = time.time()
+
+# Regex that matches a single emoji token (basic emoji or ZWJ sequences)
+_EMOJI_RE = re.compile(
+    r"^(?:[\U0001F300-\U0001FAFF]|[\U00002600-\U000027BF]|[\U0001F000-\U0001F9FF]"
+    r"|[\u2600-\u27BF]|\u2702|\u2705|[\u2709-\u2764]|\u2795|\u2796|\u2797|\u27A1"
+    r"|[\u2934-\u2935]|[\u25AA-\u25FE]|[\u2614-\u26FF]|[\u2702-\u27B0]"
+    r"|[\u231A-\u231B]|\u23F0|\u23F3|[\u25FD-\u25FE]|[\u2B50-\u2B55]"
+    r"|\u00A9|\u00AE|\u203C|\u2049|\u20E3|[\uFE00-\uFE0F]|\u3030|\u303D"
+    r"|\u3297|\u3299)+$"
+)
+
+
+def _looks_like_emoji(token: str) -> bool:
+    """Return True if token appears to be an emoji rather than a word or hex code."""
+    # Quick rejection: pure ASCII words or #hex strings are never emoji
+    if token.startswith("#"):
+        return False
+    if token.isascii():
+        return False
+    return bool(_EMOJI_RE.match(token))
 
 
 # ── Converters ────────────────────────────────────────────────────────────────
 
 class UserID(commands.Converter[int]):
-    """Accepts a raw user ID or a mention (<@123> / <@!123>) and returns an int."""
-
     async def convert(self, ctx: commands.Context[Any], argument: str) -> int:
         stripped = argument.strip().lstrip("<@!").rstrip(">")
         try:
@@ -42,17 +60,15 @@ async def _respond(ctx: commands.Context[Any], embed: discord.Embed) -> None:
 
 
 def _fmt_uptime(seconds: int) -> str:
-    days, rem    = divmod(seconds, 86400)
-    hours, rem   = divmod(rem, 3600)
-    mins, secs   = divmod(rem, 60)
+    days, rem  = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    mins, secs = divmod(rem, 60)
     return f"{days}d {hours}h {mins}m {secs}s"
 
 
-
-# ── Table paginator (sudo-specific) ──────────────────────────────────────────
+# ── Table paginator ───────────────────────────────────────────────────────────
 
 def _build_table_pages(table: str, rows: list[Any], rows_per_page: int = 5) -> list[discord.Embed]:
-    """Build a list of embeds, each showing rows_per_page rows of a DB table."""
     if not rows:
         return [Embeds.base(f"> `🗄️` *`{table}` — no rows found*")]
     total_pages = max(1, -(-len(rows) // rows_per_page))
@@ -65,14 +81,12 @@ def _build_table_pages(table: str, rows: list[Any], rows_per_page: int = 5) -> l
             title = f"`{items[0][0]}` = {items[0][1]}"
             body  = "\n".join(f"> `{k}` {v}" for k, v in items[1:])
             embed.add_field(name=title, value=body or "> *empty*", inline=False)
-        embed.set_footer(text=f"Page {page_num + 1} / {total_pages}  •  {len(rows)} rows total")
+        embed.set_footer(text=f"Page {page_num + 1} / {total_pages}  ·  {len(rows)} rows total")
         pages.append(embed)
     return pages
 
 
 class TablePaginatorView(PaginatorView):
-    """PaginatorView that re-fetches rows from Supabase on ↺."""
-
     def __init__(self, table: str, rows: list[Any], owner_id: int) -> None:
         self.table = table
         super().__init__(pages=_build_table_pages(table, rows), owner_id=owner_id)
@@ -80,7 +94,7 @@ class TablePaginatorView(PaginatorView):
     async def _rebuild_pages(self) -> list[discord.Embed]:
         try:
             res  = db.supabase.table(self.table).select("*").limit(50).execute()
-            rows: list[Any] = res.data or []  # supabase-py: res.data has no public stubs
+            rows: list[Any] = res.data or []
             return _build_table_pages(self.table, rows)
         except Exception as e:
             return [Embeds.error(f"Refresh failed: {e}")]
@@ -89,23 +103,18 @@ class TablePaginatorView(PaginatorView):
 # ── Sudo Cog ──────────────────────────────────────────────────────────────────
 
 class Sudo(commands.Cog):
-    """
-    Owner-only commands — prefix only, never registered as slash commands.
-    All use the !d prefix. Type !d sudo to see the full command list.
-    """
+    """Owner-only prefix commands. All nest under !d."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
     async def cog_check(self, ctx: commands.Context[Any]) -> bool:  # type: ignore[override]
-        """Block all sudo commands from non-owners silently."""
         return await self.bot.is_owner(ctx.author)
 
     # ── Help ──────────────────────────────────────────────────────────────────
 
     @commands.command(name="sudo")
     async def sudo_help(self, ctx: commands.Context[Any]) -> None:
-        """Show all sudo commands."""
         embed = Embeds.base("> `⚡` *Sudo — owner-only commands*")
         embed.add_field(name="`👤` User", value=(
             "> `!d warn <id> <reason>` — issue a warn\n"
@@ -118,7 +127,7 @@ class Sudo(commands.Cog):
         ), inline=False)
         embed.add_field(name="`🌸` Season", value=(
             "> `!d seasonend` — trigger season end\n"
-            "> `!d seasonset <name> [#hex]` — rename / recolor"
+            "> `!d seasonset <name> [emoji] [#hex]` — rename / set emoji / recolor"
         ), inline=False)
         embed.add_field(name="`📢` Broadcast", value=(
             "> `!d announce <guild_id> <msg>` — send to guild notif channel\n"
@@ -140,14 +149,13 @@ class Sudo(commands.Cog):
             "> `!d data` — table row counts\n"
             "> `!d data <table>` — paginated table rows"
         ), inline=False)
-        embed.set_footer(text="Prefix: !d  •  Owner only")
+        embed.set_footer(text="Prefix: !d  ·  Owner only")
         await _respond(ctx, embed)
 
     # ── Warn ──────────────────────────────────────────────────────────────────
 
     @commands.command(name="warn")
     async def warn(self, ctx: commands.Context[Any], user_id: Annotated[int, UserID()], *, reason: str) -> None:
-        """Issue a global warn. Auto-bans at 3 active warns."""
         await db.get_or_create_user(user_id)
         await db.issue_warn(user_id=user_id, reason=reason, issued_by=ctx.author.id)
         warn_count = await db.count_active_warns(user_id)
@@ -172,7 +180,6 @@ class Sudo(commands.Cog):
 
     @commands.command(name="clearwarn")
     async def clearwarn(self, ctx: commands.Context[Any], warn_id: int) -> None:
-        """Remove a specific warn by ID."""
         try:
             await db.clear_warn(warn_id)
             await _respond(ctx, Embeds.success(f"Warn `{warn_id}` cleared."))
@@ -181,11 +188,9 @@ class Sudo(commands.Cog):
 
     @commands.command(name="warns")
     async def warns(self, ctx: commands.Context[Any], user_id: Annotated[int, UserID()]) -> None:
-        """View active warns for a user."""
         warns_list = await db.get_active_warns(user_id)
         try:
-            user = await self.bot.fetch_user(user_id)
-            username = str(user)
+            username = str(await self.bot.fetch_user(user_id))
         except Exception:
             username = f"User {user_id}"
 
@@ -205,7 +210,6 @@ class Sudo(commands.Cog):
 
     @commands.command(name="ban")
     async def ban(self, ctx: commands.Context[Any], user_id: Annotated[int, UserID()], *, reason: str = "No reason provided.") -> None:
-        """Globally ban a user from Denki."""
         await self._execute_ban(ctx, user_id, reason, silent=False)
 
     async def _execute_ban(self, ctx: commands.Context[Any], user_id: int, reason: str, silent: bool) -> None:
@@ -220,8 +224,7 @@ class Sudo(commands.Cog):
 
         if not silent:
             try:
-                user = await self.bot.fetch_user(user_id)
-                username = str(user)
+                username = str(await self.bot.fetch_user(user_id))
             except Exception:
                 username = f"User {user_id}"
             await _respond(ctx, Embeds.success(
@@ -230,7 +233,6 @@ class Sudo(commands.Cog):
 
     @commands.command(name="unban")
     async def unban(self, ctx: commands.Context[Any], user_id: Annotated[int, UserID()]) -> None:
-        """Remove a global Denki ban."""
         ban = await db.get_ban(user_id)
         if not ban:
             return await _respond(ctx, Embeds.error(f"User `{user_id}` is not currently banned."))
@@ -245,7 +247,6 @@ class Sudo(commands.Cog):
 
     @commands.command(name="wallet")
     async def wallet(self, ctx: commands.Context[Any], user_id: Annotated[int, UserID()]) -> None:
-        """Audit a user's wallet, warns, and ban status."""
         user_data = await db.get_user(user_id)
         if not user_data:
             return await _respond(ctx, Embeds.error(f"User `{user_id}` has no wallet record."))
@@ -270,7 +271,6 @@ class Sudo(commands.Cog):
 
     @commands.command(name="adjust")
     async def adjust(self, ctx: commands.Context[Any], user_id: Annotated[int, UserID()], amount: int) -> None:
-        """Directly adjust a user's wallet. Positive = add, negative = subtract."""
         await db.get_or_create_user(user_id)
         try:
             wallet_data = await db.update_wallet(user_id, amount)
@@ -291,7 +291,6 @@ class Sudo(commands.Cog):
 
     @commands.command(name="seasonend")
     async def seasonend(self, ctx: commands.Context[Any]) -> None:
-        """Manually trigger season end logic."""
         season = await db.get_active_season()
         if not season:
             return await _respond(ctx, Embeds.error("There is no active season to end."))
@@ -314,10 +313,18 @@ class Sudo(commands.Cog):
     @commands.command(name="seasonset")
     async def seasonset(self, ctx: commands.Context[Any], *, args: str) -> None:
         """
-        Set the active season name and embed color.
-        Usage: !d seasonset Winter Arc
-               !d seasonset Winter Arc #e8a723
-        The color (optional) must be a 6-digit hex and is always the last word.
+        Set the active season name, optional emoji, and optional theme color.
+
+        Usage:
+            !d seasonset Winter Arc
+            !d seasonset Winter Arc ❄️
+            !d seasonset Winter Arc #F2C84B
+            !d seasonset Winter Arc ❄️ #F2C84B
+
+        Parser rules (applied right-to-left):
+          1. If the last token starts with # and is a valid 6-char hex → it's the color.
+          2. If the remaining last token is a non-ASCII emoji → it's the emoji.
+          3. Everything left is the season name.
         """
         season = await db.get_active_season()
         if not season:
@@ -327,9 +334,9 @@ class Sudo(commands.Cog):
         if not parts:
             return await _respond(ctx, Embeds.error("Provide a season name."))
 
-        # If the last word looks like a hex color, split it off
-        color = "#CD7F32"
-        last  = parts[-1].lstrip("#")
+        # Step 1: strip optional hex color from the right
+        color: str | None = None
+        last = parts[-1].lstrip("#")
         if len(last) == 6:
             try:
                 int(last, 16)
@@ -341,18 +348,44 @@ class Sudo(commands.Cog):
         if not parts:
             return await _respond(ctx, Embeds.error("Provide a season name before the color."))
 
+        # Step 2: strip optional emoji from the right
+        emoji: str | None = None
+        if _looks_like_emoji(parts[-1]):
+            emoji = parts[-1]
+            parts = parts[:-1]
+
+        if not parts:
+            return await _respond(ctx, Embeds.error("Provide a season name."))
+
         name = " ".join(parts)
-        await db.update_season(int(season["season_id"]), {"name": name, "theme": color})
-        embeds_module.set_color(color)
+
+        # Build update payload — only overwrite what was provided
+        updates: dict[str, Any] = {"name": name}
+        if color:
+            updates["theme"] = color
+        if emoji:
+            updates["emoji"] = emoji
+
+        await db.update_season(int(season["season_id"]), updates)
+
+        if color:
+            embeds_module.set_color(color)
+
+        # Build confirmation message
+        parts_msg = [f"Name: `{name}`"]
+        if emoji:
+            parts_msg.append(f"Emoji: `{emoji}`")
+        if color:
+            parts_msg.append(f"Color: `{color}`")
+
         await _respond(ctx, Embeds.success(
-            f"Season updated.\n> Name: `{name}`\n> Color: `{color}`"
+            "Season updated.\n" + "\n".join(f"> {p}" for p in parts_msg)
         ))
 
     # ── Announce / Reports ────────────────────────────────────────────────────
 
     @commands.command(name="announce")
     async def announce(self, ctx: commands.Context[Any], guild_id: int, *, message: str) -> None:
-        """Send a custom announcement to a guild's notif channel."""
         config = await db.get_guild_config(guild_id)
         if not config or not config.get("notif_channel"):
             return await _respond(ctx, Embeds.error(f"Guild `{guild_id}` has no notification channel configured."))
@@ -368,7 +401,6 @@ class Sudo(commands.Cog):
 
     @commands.command(name="reports")
     async def reports(self, ctx: commands.Context[Any]) -> None:
-        """View all pending reports."""
         pending = await db.get_reports(status="pending")
         if not pending:
             return await _respond(ctx, Embeds.info("No pending reports."))
@@ -390,7 +422,6 @@ class Sudo(commands.Cog):
 
     @commands.command(name="dismiss")
     async def dismiss(self, ctx: commands.Context[Any], report_id: int) -> None:
-        """Dismiss a report by ID."""
         await db.update_report_status(report_id, "dismissed")
         await _respond(ctx, Embeds.success(f"Report `{report_id}` dismissed."))
 
@@ -398,14 +429,7 @@ class Sudo(commands.Cog):
 
     @commands.command(name="presence")
     async def presence(self, ctx: commands.Context[Any], activity_type: str, *, text: str = "") -> None:
-        """
-        Set the bot's activity (the line shown under the username).
-        Types: watching | playing | listening | competing | streaming | clear
-        Usage: !d presence watching the global economy ⚡
-               !d presence clear
-        """
         activity_type = activity_type.lower()
-
         if activity_type == "clear":
             await self.bot.change_presence(activity=None)
             return await _respond(ctx, Embeds.success("Activity cleared."))
@@ -433,11 +457,6 @@ class Sudo(commands.Cog):
 
     @commands.command(name="status")
     async def status(self, ctx: commands.Context[Any], status_val: str) -> None:
-        """
-        Set the bot's online status indicator (the coloured dot).
-        Values: online | idle | dnd | invisible
-        Usage: !d status dnd
-        """
         status_map: dict[str, discord.Status] = {
             "online":    discord.Status.online,
             "idle":      discord.Status.idle,
@@ -452,12 +471,6 @@ class Sudo(commands.Cog):
 
     @commands.command(name="botstatus")
     async def botstatus(self, ctx: commands.Context[Any], *, text: str) -> None:
-        """
-        Set the bot's custom status note — the short text line shown below
-        the username in the member list (like a user's personal note).
-        Usage: !d botstatus Did you know 5+3 = 4?
-               !d botstatus clear
-        """
         if text.lower() == "clear":
             await self.bot.change_presence(activity=discord.CustomActivity(name=""))
             return await _respond(ctx, Embeds.success("Custom status cleared."))
@@ -468,36 +481,34 @@ class Sudo(commands.Cog):
 
     @commands.command(name="sys")
     async def sys_stats(self, ctx: commands.Context[Any]) -> None:
-        """Show bot system stats — uptime, latency, memory, guilds, Python/library versions."""
-        uptime_str  = _fmt_uptime(int(time.time() - _start_time))
-        latency_ms  = round(self.bot.latency * 1000, 2)
+        uptime_str   = _fmt_uptime(int(time.time() - _start_time))
+        latency_ms   = round(self.bot.latency * 1000, 2)
         total_guilds = len(self.bot.guilds)
         total_users  = sum(g.member_count or 0 for g in self.bot.guilds)
 
         try:
             import resource
-            mem_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+            mem_mb  = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
             mem_str = f"{mem_mb:.1f} MB"
         except Exception:
             mem_str = "N/A"
 
         try:
             import psutil  # type: ignore[import-untyped]
-            cpu_pct: float = psutil.cpu_percent(interval=0.1)
-            cpu_str = f"{cpu_pct:.1f}%"
+            cpu_str = f"{psutil.cpu_percent(interval=0.1):.1f}%"
         except (ImportError, Exception):
             cpu_str = "N/A"
 
         embed = Embeds.base("> `📊` *System Stats*")
-        embed.add_field(name="`⏱️` Uptime",      value=f"```{uptime_str}```",            inline=True)
-        embed.add_field(name="`📡` Latency",     value=f"```{latency_ms}ms```",           inline=True)
-        embed.add_field(name="`🧠` Memory",      value=f"```{mem_str}```",               inline=True)
-        embed.add_field(name="`⚙️` CPU",         value=f"```{cpu_str}```",               inline=True)
-        embed.add_field(name="`🏠` Guilds",      value=f"```{total_guilds}```",            inline=True)
-        embed.add_field(name="`👥` Users",       value=f"```{total_users:,}```",           inline=True)
-        embed.add_field(name="`🐍` Python",      value=f"```{sys.version[:6]}```",         inline=True)
-        embed.add_field(name="`📦` discord.py",  value=f"```{discord.__version__}```",    inline=True)
-        embed.add_field(name="`🖥️` OS",         value=f"```{platform.system()}```",       inline=True)
+        embed.add_field(name="`⏱️` Uptime",     value=f"```{uptime_str}```",         inline=True)
+        embed.add_field(name="`📡` Latency",    value=f"```{latency_ms}ms```",        inline=True)
+        embed.add_field(name="`🧠` Memory",     value=f"```{mem_str}```",             inline=True)
+        embed.add_field(name="`⚙️` CPU",        value=f"```{cpu_str}```",             inline=True)
+        embed.add_field(name="`🏠` Guilds",     value=f"```{total_guilds}```",         inline=True)
+        embed.add_field(name="`👥` Users",      value=f"```{total_users:,}```",        inline=True)
+        embed.add_field(name="`🐍` Python",     value=f"```{sys.version[:6]}```",      inline=True)
+        embed.add_field(name="`📦` discord.py", value=f"```{discord.__version__}```",  inline=True)
+        embed.add_field(name="`🖥️` OS",        value=f"```{platform.system()}```",    inline=True)
         await _respond(ctx, embed)
 
     # ── Bot control ───────────────────────────────────────────────────────────
@@ -508,7 +519,6 @@ class Sudo(commands.Cog):
 
     @botctl.command(name="restart")
     async def botctl_restart(self, ctx: commands.Context[Any]) -> None:
-        """Restart the bot process."""
         view = ConfirmView(ctx.author.id)
         await ctx.reply(
             embed=Embeds.warn_msg("Restart the bot? The bot will be offline for a few seconds."),
@@ -518,7 +528,6 @@ class Sudo(commands.Cog):
         if not view.confirmed:
             await ctx.reply(embed=Embeds.info("Restart cancelled."))
             return
-
         await ctx.reply(embed=Embeds.success("Restarting..."))
         import os
         os.execv(sys.executable, [sys.executable] + sys.argv)
@@ -527,7 +536,6 @@ class Sudo(commands.Cog):
 
     @commands.group(name="cogs", invoke_without_command=True)
     async def cogs_group(self, ctx: commands.Context[Any]) -> None:
-        """List all loaded cogs. Usage: !d cogs  OR  !d cogs reload <name|all>"""
         loaded = sorted(self.bot.extensions.keys())
         lines  = "\n".join(f"> ✅ `{ext}`" for ext in loaded)
         embed  = Embeds.base(f"> `🧩` *Loaded cogs ({len(loaded)})*\n\n{lines}")
@@ -535,7 +543,6 @@ class Sudo(commands.Cog):
 
     @cogs_group.command(name="reload")
     async def cogs_reload(self, ctx: commands.Context[Any], cog: str = "all") -> None:
-        """Reload a specific cog or all cogs. Usage: !d cogs reload economy | !d cogs reload all"""
         from main import COGS
 
         if cog.lower() == "all":
@@ -546,7 +553,7 @@ class Sudo(commands.Cog):
                     results.append(f"> ✅ `{ext}`")
                 except Exception as e:
                     results.append(f"> ❌ `{ext}` — {e}")
-            await _respond(ctx, Embeds.base(f"> `🔄` *Reloaded all cogs*\n\n" + "\n".join(results)))
+            await _respond(ctx, Embeds.base("> `🔄` *Reloaded all cogs*\n\n" + "\n".join(results)))
         else:
             ext = cog if "." in cog else f"cogs.{cog}"
             try:
@@ -563,11 +570,6 @@ class Sudo(commands.Cog):
 
     @commands.group(name="data", invoke_without_command=True)
     async def data_group(self, ctx: commands.Context[Any]) -> None:
-        """
-        Show row counts for all DB tables.
-        Usage: !d data           — overview of all tables
-               !d data <table>  — paginated rows for one table
-        """
         tables = [
             "users", "banks", "guilds", "guildconfig",
             "seasons", "cooldowns", "transactions",
@@ -596,7 +598,6 @@ class Sudo(commands.Cog):
 
     @data_group.command(name="table")
     async def data_table(self, ctx: commands.Context[Any], table: str) -> None:
-        """Show paginated rows for a specific table. Usage: !d data table <name>"""
         valid_tables = {
             "users", "banks", "guilds", "guildconfig",
             "seasons", "cooldowns", "transactions",
@@ -608,7 +609,7 @@ class Sudo(commands.Cog):
 
         try:
             res  = db.supabase.table(table).select("*").limit(50).execute()
-            rows: list[Any] = res.data or []  # supabase-py: res.data has no public stubs
+            rows: list[Any] = res.data or []
         except Exception as e:
             return await _respond(ctx, Embeds.error(f"Query failed: {e}"))
 
@@ -616,7 +617,6 @@ class Sudo(commands.Cog):
         view  = TablePaginatorView(table=table, rows=rows, owner_id=ctx.author.id)
         msg   = await ctx.reply(embed=pages[0], view=view)
 
-        # Store message reference for timeout button disable
         async def on_timeout() -> None:
             for item in view.children:
                 if isinstance(item, discord.ui.Button):
@@ -628,9 +628,9 @@ class Sudo(commands.Cog):
         view.on_timeout = on_timeout  # type: ignore[method-assign]
 
 
-class ConfirmView(discord.ui.View):
-    """Yes / No confirmation for destructive sudo actions. Symbols: ✓  ✕"""
+# ── Confirm View ──────────────────────────────────────────────────────────────
 
+class ConfirmView(discord.ui.View):
     def __init__(self, owner_id: int) -> None:
         super().__init__(timeout=30)
         self.owner_id  = owner_id
@@ -642,17 +642,13 @@ class ConfirmView(discord.ui.View):
     @discord.ui.button(label="✓", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         self.confirmed = True
-        await interaction.response.edit_message(
-            embed=Embeds.info("Confirmed — processing..."), view=None
-        )
+        await interaction.response.edit_message(embed=Embeds.info("Confirmed — processing..."), view=None)
         self.stop()
 
     @discord.ui.button(label="✕", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         self.confirmed = False
-        await interaction.response.edit_message(
-            embed=Embeds.info("Cancelled."), view=None
-        )
+        await interaction.response.edit_message(embed=Embeds.info("Cancelled."), view=None)
         self.stop()
 
 

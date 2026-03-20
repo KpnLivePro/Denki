@@ -69,13 +69,10 @@ async def get_or_create_user(user_id: int) -> dict[str, Any]:
 
 
 async def update_wallet(user_id: int, amount: int) -> dict[str, Any]:
-    """
-    Add or subtract from users.wallet.
-    Raises ValueError if balance would go below 0.
-    """
+    """Add or subtract from users.wallet. Raises ValueError if balance would go below 0."""
     try:
-        user = await get_or_create_user(user_id)
-        new_balance: int = int(user["wallet"]) + amount
+        user        = await get_or_create_user(user_id)
+        new_balance = int(user["wallet"]) + amount
         if new_balance < 0:
             raise ValueError(
                 f"Insufficient funds. Wallet: ¥{user['wallet']:,} — tried to change by ¥{amount:,}."
@@ -89,15 +86,32 @@ async def update_wallet(user_id: int, amount: int) -> dict[str, Any]:
         raise
 
 
+async def get_richest_user() -> Optional[dict[str, Any]]:
+    """
+    Return the single user with the highest wallet balance across the entire network.
+    Used by the website push to populate the hero orbit badge.
+    Returns { user_id, wallet } or None if no users exist.
+    """
+    try:
+        res = (
+            supabase.table("users")
+            .select("user_id, wallet")
+            .order("wallet", desc=True)
+            .limit(1)
+            .execute()
+        )
+        return _row(res.data[0]) if res.data else None
+    except Exception as e:
+        logger.error(f"get_richest_user(): {e}")
+        raise
+
+
 # ── Vote streak ───────────────────────────────────────────────────────────────
 
 async def get_vote_streak(user_id: int) -> tuple[int, Optional[datetime]]:
-    """
-    Returns (vote_streak, last_vote_at) for a user.
-    last_vote_at is None if they've never voted.
-    """
+    """Returns (vote_streak, last_vote_at) for a user."""
     try:
-        user = await get_or_create_user(user_id)
+        user   = await get_or_create_user(user_id)
         streak = int(user.get("vote_streak") or 0)
         raw    = user.get("last_vote_at")
         last   = datetime.fromisoformat(str(raw)) if raw else None
@@ -110,12 +124,7 @@ async def get_vote_streak(user_id: int) -> tuple[int, Optional[datetime]]:
 async def update_vote_streak(user_id: int) -> int:
     """
     Increment or reset the vote streak based on last_vote_at, then stamp now.
-
-    Rules:
-    - If last vote was within 12–36h  → streak continues (+1)
-    - If last vote was > 36h ago      → streak resets to 1
-    - If never voted                  → streak = 1
-
+    36h window: top.gg cooldown is 12h, 24h grace for late voters.
     Returns the new streak value.
     """
     try:
@@ -125,17 +134,12 @@ async def update_vote_streak(user_id: int) -> int:
         if last_vote_at is None:
             new_streak = 1
         else:
-            # Normalise to UTC
             if last_vote_at.tzinfo is None:
                 last_vote_at = last_vote_at.replace(tzinfo=timezone.utc)
             hours_since = (now - last_vote_at).total_seconds() / 3600
-            # 36h window: top.gg cooldown is 12h, give 24h grace for late voters
-            if hours_since <= 36:
-                new_streak = streak + 1
-            else:
-                new_streak = 1
+            new_streak  = streak + 1 if hours_since <= 36 else 1
 
-        res = supabase.table("users").update({
+        supabase.table("users").update({
             "vote_streak":  new_streak,
             "last_vote_at": now.isoformat(),
         }).eq("user_id", user_id).execute()
@@ -149,26 +153,22 @@ async def update_vote_streak(user_id: int) -> int:
 
 def calculate_streak_bonus(base: int, streak: int) -> int:
     """
-    Calculate total vote reward including streak bonus.
-
-    Streak milestones:
-      1–2   votes  → base only
-      3–6   votes  → +10%
-      7–13  votes  → +25%
-      14–29 votes  → +50%
-      30+   votes  → +100% (double)
+    Apply streak multiplier to base vote reward.
+    1–2  days  → 1.0x
+    3–6  days  → 1.1x
+    7–13 days  → 1.25x
+    14–29 days → 1.5x
+    30+  days  → 2.0x
     """
     if streak >= 30:
-        multiplier = 2.0
-    elif streak >= 14:
-        multiplier = 1.5
-    elif streak >= 7:
-        multiplier = 1.25
-    elif streak >= 3:
-        multiplier = 1.10
-    else:
-        multiplier = 1.0
-    return int(base * multiplier)
+        return int(base * 2.0)
+    if streak >= 14:
+        return int(base * 1.5)
+    if streak >= 7:
+        return int(base * 1.25)
+    if streak >= 3:
+        return int(base * 1.10)
+    return base
 
 
 # ── Guilds ────────────────────────────────────────────────────────────────────
@@ -197,6 +197,28 @@ async def get_or_create_guild(guild_id: int) -> dict[str, Any]:
         return _row(res.data[0])
     except Exception as e:
         logger.error(f"get_or_create_guild({guild_id}): {e}")
+        raise
+
+
+async def update_guild_meta(
+    guild_id: int,
+    name: str,
+    icon_url: Optional[str],
+) -> None:
+    """
+    Persist the guild's display name and icon URL to the guilds table.
+    Called on on_guild_join and on_guild_update so the website always has
+    fresh data without making live Discord API calls.
+    """
+    try:
+        await get_or_create_guild(guild_id)
+        supabase.table("guilds").update({
+            "guild_name": name,
+            "icon_url":   icon_url,
+        }).eq("guild_id", guild_id).execute()
+        logger.info(f"Guild meta updated guild_id={guild_id} name={name!r}")
+    except Exception as e:
+        logger.error(f"update_guild_meta({guild_id}): {e}")
         raise
 
 
@@ -374,11 +396,11 @@ async def get_or_create_bank(user_id: int, guild_id: int, season_id: int) -> dic
         if bank:
             return bank
         res = supabase.table("banks").insert({
-            "user_id":     user_id,
-            "guild_id":    guild_id,
-            "season_id":   season_id,
-            "balance":     0,
-            "invested":    0,
+            "user_id":      user_id,
+            "guild_id":     guild_id,
+            "season_id":    season_id,
+            "balance":      0,
+            "invested":     0,
             "total_earned": 0,
         }).execute()
         return _row(res.data[0])
@@ -410,7 +432,7 @@ async def add_investment(user_id: int, guild_id: int, season_id: int, amount: in
         await update_wallet(user_id, -amount)
         bank = await get_or_create_bank(user_id, guild_id, season_id)
         res  = supabase.table("banks").update({
-            "invested":    int(bank["invested"])     + amount,
+            "invested":     int(bank["invested"])     + amount,
             "total_earned": int(bank["total_earned"]) + amount,
         }).eq("bank_id", bank["bank_id"]).execute()
         logger.info(f"User {user_id} invested ¥{amount:,} in guild {guild_id} season {season_id}")
@@ -457,10 +479,7 @@ async def get_season_vault_total(guild_id: int, season_id: int) -> int:
 # ── Cooldowns ─────────────────────────────────────────────────────────────────
 
 async def get_cooldown(user_id: int, cooldown_type: str) -> Optional[datetime]:
-    """
-    Returns last_used datetime for a cooldown type, or None if never used.
-    cooldown_type: 'daily' | 'work' | 'rob' | 'vote'
-    """
+    """cooldown_type: 'daily' | 'work' | 'rob' | 'vote'"""
     try:
         res = (
             supabase.table("cooldowns")
@@ -493,11 +512,6 @@ async def set_cooldown(user_id: int, cooldown_type: str) -> None:
 # ── Transactions ──────────────────────────────────────────────────────────────
 
 async def log_transaction(sender_id: int, receiver_id: int, amount: int, tx_type: str) -> dict[str, Any]:
-    """
-    tx_type: 'transfer' | 'rob' | 'rob_fine' | 'daily' | 'work' | 'vote'
-             'season_bonus' | 'admin_adjust' | 'gamble_win' | 'gamble_loss'
-             'blacktea_win' | 'blacktea_loss' | 'shop_purchase' | 'invest'
-    """
     try:
         res = supabase.table("transactions").insert({
             "sender_id":   sender_id,
@@ -814,12 +828,12 @@ async def set_guild_invite(guild_id: int, invite_url: str) -> dict[str, Any]:
 
 async def get_global_leaderboard_guilds(limit: int = 10) -> list[dict[str, Any]]:
     try:
-        res    = supabase.table("guilds").select("guild_id, guild_name, invite_url").eq("global_enrolled", True).execute()
+        res    = supabase.table("guilds").select("guild_id, guild_name, invite_url, icon_url").eq("global_enrolled", True).execute()
         guilds = _rows(res.data)
         if not guilds:
             return []
 
-        results = []
+        results: list[dict[str, Any]] = []
         for guild in guilds:
             gid      = int(guild["guild_id"])
             bank_res = supabase.table("banks").select("user_id").eq("guild_id", gid).execute()
@@ -833,6 +847,7 @@ async def get_global_leaderboard_guilds(limit: int = 10) -> list[dict[str, Any]]
                 "guild_id":     gid,
                 "guild_name":   guild.get("guild_name") or f"Server {gid}",
                 "invite_url":   guild.get("invite_url"),
+                "icon_url":     guild.get("icon_url"),
                 "wallet_total": wallet_total,
             })
 
@@ -862,10 +877,9 @@ async def open_server_shop(guild_id: int, season_id: int) -> dict[str, Any]:
         if not top:
             raise ValueError("No investors found in this season's vault.")
 
-        top_user_id = int(top[0]["user_id"])
-        bank        = await get_or_create_bank(top_user_id, guild_id, season_id)
+        top_user_id  = int(top[0]["user_id"])
+        bank         = await get_or_create_bank(top_user_id, guild_id, season_id)
         new_invested = int(bank["invested"]) - SHOP_OPEN_COST
-
         if new_invested < 0:
             raise ValueError("Top investor's balance is insufficient to cover the shop cost.")
 
@@ -885,11 +899,8 @@ async def open_server_shop(guild_id: int, season_id: int) -> dict[str, Any]:
 
 async def check_topgg_vote(user_id: int, bot_id: int, topgg_token: str) -> dict:
     """
-    Call top.gg REST API to check if a user has voted for the bot.
-
-    Endpoint: GET https://top.gg/api/bots/{bot_id}/check?userId={user_id}
-    Returns:  { "voted": bool, "isWeekend": bool }
-    Raises:   RuntimeError on non-200 response, aiohttp errors on network failure.
+    Call top.gg REST API to check if a user has voted.
+    Returns { "voted": bool, "isWeekend": bool }
     """
     import aiohttp
 

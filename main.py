@@ -14,6 +14,7 @@ import embeds as embeds_module
 from embeds import Embeds
 
 # ── Logging ───────────────────────────────────────────────────────────────────
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -24,12 +25,15 @@ logger = logging.getLogger("denki")
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-TOKEN:        str = os.environ.get("DISCORD_TOKEN", "")
-OWNER_ID:     int = int(os.environ.get("OWNER_ID", "0"))
-TOPGG_TOKEN:  str = os.environ.get("TOPGG_TOKEN", "")
-BOT_ID:       int = 1422399195062734881
-PREFIX:       str = "!d "
-INVITE:       str = "https://discord.com/oauth2/authorize?client_id=1422399195062734881&permissions=8&scope=bot+applications.commands"
+TOKEN:       str = os.environ.get("DISCORD_TOKEN", "")
+OWNER_ID:    int = int(os.environ.get("OWNER_ID", "0"))
+TOPGG_TOKEN: str = os.environ.get("TOPGG_TOKEN", "")
+BOT_ID:      int = 1422399195062734881
+PREFIX:      str = "!d "
+INVITE:      str = (
+    "https://discord.com/oauth2/authorize"
+    "?client_id=1422399195062734881&permissions=8&scope=bot+applications.commands"
+)
 
 if not TOKEN:
     logger.critical("DISCORD_TOKEN is not set — cannot start.")
@@ -56,13 +60,14 @@ COGS: list[str] = [
     "cogs.sudo",
     "cogs.notifications",
     "cogs.tea",
+    "cogs.website_push",
 ]
 
 # ── Bot ───────────────────────────────────────────────────────────────────────
 
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True
+intents.members         = True
 
 bot = commands.Bot(
     command_prefix=PREFIX,
@@ -119,14 +124,16 @@ async def on_ready() -> None:
     )
 
     try:
-        synced = await bot.tree.sync()
+        synced       = await bot.tree.sync()
         synced_count = len(synced)
     except Exception as e:
         logger.error(f"Failed to sync slash commands: {e}")
         synced_count = 0
 
-    logger.info("denki.startup bot=%s id=%s guilds=%d cogs=%d commands=%d",
-        user_name, user_id, len(bot.guilds), len(COGS), synced_count)
+    logger.info(
+        "denki.startup bot=%s id=%s guilds=%d cogs=%d commands=%d",
+        user_name, user_id, len(bot.guilds), len(COGS), synced_count,
+    )
     logger.info("denki.startup invite=%s", INVITE)
     logger.info("denki.startup topgg_configured=%s", bool(TOPGG_TOKEN))
     logger.info("denki.startup status=ready")
@@ -146,8 +153,27 @@ async def on_resumed() -> None:
 async def on_guild_join(guild: discord.Guild) -> None:
     await db.get_or_create_guild(guild.id)
     await db.get_or_create_guild_config(guild.id)
-    logger.info("denki.guild action=join id=%d name=%r members=%d",
-        guild.id, guild.name, guild.member_count or 0)
+    # Persist name and icon so the website can display them immediately
+    icon_url = str(guild.icon.url) if guild.icon else None
+    await db.update_guild_meta(guild.id, guild.name, icon_url)
+    logger.info(
+        "denki.guild action=join id=%d name=%r members=%d",
+        guild.id, guild.name, guild.member_count or 0,
+    )
+
+
+@bot.event
+async def on_guild_update(before: discord.Guild, after: discord.Guild) -> None:
+    """Refresh name and icon in DB whenever a server changes either."""
+    name_changed = before.name != after.name
+    icon_changed = before.icon != after.icon
+    if name_changed or icon_changed:
+        icon_url = str(after.icon.url) if after.icon else None
+        await db.update_guild_meta(after.id, after.name, icon_url)
+        logger.info(
+            "denki.guild action=update id=%d name=%r icon_changed=%s",
+            after.id, after.name, icon_changed,
+        )
 
 
 @bot.event
@@ -155,8 +181,10 @@ async def on_member_join(member: discord.Member) -> None:
     guild = member.guild
     if guild.member_count and guild.member_count >= 250:
         await db.set_guild_global(guild.id, True)
-        logger.info("denki.guild action=global_unlock id=%d members=%d",
-            guild.id, guild.member_count)
+        logger.info(
+            "denki.guild action=global_unlock id=%d members=%d",
+            guild.id, guild.member_count,
+        )
 
 
 @bot.event
@@ -164,8 +192,10 @@ async def on_member_remove(member: discord.Member) -> None:
     guild = member.guild
     if guild.member_count and guild.member_count < 250:
         await db.set_guild_global(guild.id, False)
-        logger.info("denki.guild action=global_revoke id=%d members=%d",
-            guild.id, guild.member_count)
+        logger.info(
+            "denki.guild action=global_revoke id=%d members=%d",
+            guild.id, guild.member_count,
+        )
 
 
 @bot.event
@@ -181,7 +211,11 @@ async def on_command_error(ctx: commands.Context[Any], error: commands.CommandEr
     if isinstance(error, commands.MissingRequiredArgument):
         await ctx.reply(embed=Embeds.error(f"Missing argument: `{error.param.name}`"))
         return
-    logger.error("denki.command error=%r command=%r", str(error), str(ctx.command), exc_info=error)
+    logger.error(
+        "denki.command error=%r command=%r",
+        str(error), str(ctx.command),
+        exc_info=error,
+    )
     await ctx.reply(embed=Embeds.error("Something went wrong. Please try again."))
 
 
@@ -194,7 +228,10 @@ async def main() -> None:
                 await bot.load_extension(cog)
                 logger.info("denki.cog action=loaded name=%s", cog)
             except Exception as e:
-                logger.error("denki.cog action=failed name=%s error=%r", cog, str(e), exc_info=e)
+                logger.error(
+                    "denki.cog action=failed name=%s error=%r",
+                    cog, str(e), exc_info=e,
+                )
 
         try:
             await bot.start(TOKEN)
