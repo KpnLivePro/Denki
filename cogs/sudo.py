@@ -51,6 +51,29 @@ class UserID(commands.Converter[int]):
             raise commands.BadArgument(f"`{argument}` is not a valid user ID or mention.")
 
 
+class Amount(commands.Converter[int]):
+    """Accepts integers, comma-formatted numbers, decimals, and k/m shorthands."""
+    async def convert(self, ctx: commands.Context[Any], argument: str) -> int:
+        cleaned = argument.strip().replace(",", "").replace("_", "")
+        multiplier = 1
+        if cleaned.lower().endswith("k"):
+            multiplier = 1_000
+            cleaned = cleaned[:-1]
+        elif cleaned.lower().endswith("m"):
+            multiplier = 1_000_000
+            cleaned = cleaned[:-1]
+        try:
+            value = round(float(cleaned) * multiplier)
+            if value == 0:
+                raise commands.BadArgument("Amount cannot be zero.")
+            return value
+        except ValueError:
+            raise commands.BadArgument(
+                f"`{argument}` is not a valid amount. "
+                "Examples: `6000`, `6,000`, `1.5k`, `-500`"
+            )
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 async def _respond(ctx: commands.Context[Any], embed: discord.Embed) -> None:
@@ -87,6 +110,7 @@ def _build_table_pages(table: str, rows: list[Any], rows_per_page: int = 5) -> l
 class TablePaginatorView(PaginatorView):
     def __init__(self, table: str, rows: list[Any], owner_id: int) -> None:
         self.table = table
+        self.msg: discord.Message | None = None
         super().__init__(pages=_build_table_pages(table, rows), owner_id=owner_id)
 
     async def _rebuild_pages(self) -> list[discord.Embed]:
@@ -96,6 +120,16 @@ class TablePaginatorView(PaginatorView):
             return _build_table_pages(self.table, rows)
         except Exception as e:
             return [Embeds.error(f"Refresh failed: {e}")]
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True
+        if self.msg:
+            try:
+                await self.msg.edit(view=self)
+            except Exception:
+                pass
 
 
 # ── Sudo Cog ──────────────────────────────────────────────────────────────────
@@ -121,7 +155,7 @@ class Sudo(commands.Cog):
             "> `!d ban <id> [reason]` — global ban\n"
             "> `!d unban <id>` — remove ban\n"
             "> `!d wallet <id>` — wallet audit\n"
-            "> `!d adjust <id> <±amount>` — adjust wallet"
+            "> `!d adjust <±amount> <@user|id>` — adjust wallet"
         ), inline=False)
         embed.add_field(name="`🌸` Season", value=(
             "> `!d seasonend` — trigger season end\n"
@@ -268,7 +302,7 @@ class Sudo(commands.Cog):
         await _respond(ctx, embed)
 
     @commands.command(name="adjust")
-    async def adjust(self, ctx: commands.Context[Any], user_id: Annotated[int, UserID()], amount: int) -> None:
+    async def adjust(self, ctx: commands.Context[Any], amount: Annotated[int, Amount()], user_id: Annotated[int, UserID()]) -> None:
         await db.get_or_create_user(user_id)
         try:
             wallet_data = await db.update_wallet(user_id, amount)
@@ -600,44 +634,39 @@ class Sudo(commands.Cog):
 
     # ── Data / DB health ──────────────────────────────────────────────────────
 
-    @commands.group(name="data", invoke_without_command=True)
-    async def data_group(self, ctx: commands.Context[Any]) -> None:
-        tables = [
+    @commands.command(name="data")
+    async def data_cmd(self, ctx: commands.Context[Any], table: str | None = None) -> None:
+        valid_tables = [
             "users", "banks", "guilds", "guildconfig",
             "seasons", "cooldowns", "transactions",
             "shopitems", "inventory", "reports", "warns", "bans",
         ]
-        results: list[tuple[str, str]] = []
-        errors:  list[str]             = []
 
-        for table in tables:
-            try:
-                res   = db.supabase.table(table).select("*", count=CountMethod.exact).limit(0).execute()
-                count = res.count if res.count is not None else "?"
-                results.append((table, str(count)))
-            except Exception as e:
-                errors.append(table)
-                results.append((table, f"ERR — {str(e)[:30]}"))
+        # No table arg — show row counts for all tables
+        if table is None:
+            results: list[tuple[str, str]] = []
+            errors:  list[str]             = []
+            for t in valid_tables:
+                try:
+                    res   = db.supabase.table(t).select("*", count=CountMethod.exact).limit(0).execute()
+                    count = res.count if res.count is not None else "?"
+                    results.append((t, str(count)))
+                except Exception as e:
+                    errors.append(t)
+                    results.append((t, f"ERR — {str(e)[:30]}"))
+            lines2 = "\n".join(
+                f"> {'❌' if t in errors else '✅'} `{t:<14}` {c} rows"
+                for t, c in results
+            )
+            status = "All tables reachable." if not errors else f"{len(errors)} table(s) errored."
+            embed  = Embeds.base(f"> `🗄️` *DB Health — {status}*\n\n{lines2}")
+            embed.set_footer(text=f"{len(valid_tables)} tables checked  ·  use `!d data <table>` to inspect rows")
+            return await _respond(ctx, embed)
 
-        lines = "\n".join(
-            f"> {'❌' if t in errors else '✅'} `{t:<14}` {c} rows"
-            for t, c in results
-        )
-        status = "All tables reachable." if not errors else f"{len(errors)} table(s) errored."
-        embed  = Embeds.base(f"> `🗄️` *DB Health — {status}*\n\n{lines}")
-        embed.set_footer(text=f"{len(tables)} tables checked")
-        await _respond(ctx, embed)
-
-    @data_group.command(name="table")
-    async def data_table(self, ctx: commands.Context[Any], table: str) -> None:
-        valid_tables = {
-            "users", "banks", "guilds", "guildconfig",
-            "seasons", "cooldowns", "transactions",
-            "shopitems", "inventory", "reports", "warns", "bans",
-        }
+        # Table name provided — show paginated rows
         if table not in valid_tables:
-            valid = ", ".join(f"`{t}`" for t in sorted(valid_tables))
-            return await _respond(ctx, Embeds.error(f"Unknown table. Valid tables: {valid}"))
+            valid = ", ".join(f"`{t}`" for t in valid_tables)
+            return await _respond(ctx, Embeds.error(f"Unknown table. Valid: {valid}"))
 
         try:
             res  = db.supabase.table(table).select("*").limit(50).execute()
@@ -645,19 +674,9 @@ class Sudo(commands.Cog):
         except Exception as e:
             return await _respond(ctx, Embeds.error(f"Query failed: {e}"))
 
-        pages = _build_table_pages(table, rows)
-        view  = TablePaginatorView(table=table, rows=rows, owner_id=ctx.author.id)
-        msg   = await ctx.reply(embed=pages[0], view=view)
-
-        async def on_timeout() -> None:
-            for item in view.children:
-                if isinstance(item, discord.ui.Button):
-                    item.disabled = True
-            try:
-                await msg.edit(view=view)
-            except Exception:
-                pass
-        view.on_timeout = on_timeout  # type: ignore[method-assign]
+        pages     = _build_table_pages(table, rows)
+        view      = TablePaginatorView(table=table, rows=rows, owner_id=ctx.author.id)
+        view.msg  = await ctx.reply(embed=pages[0], view=view)
 
 # ── Confirm View ──────────────────────────────────────────────────────────────
 
