@@ -5,7 +5,7 @@ import platform
 import re
 import sys
 import time
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 import discord
 from discord.ext import commands
@@ -33,8 +33,6 @@ _EMOJI_RE = re.compile(
 
 
 def _looks_like_emoji(token: str) -> bool:
-    """Return True if token appears to be an emoji rather than a word or hex code."""
-    # Quick rejection: pure ASCII words or #hex strings are never emoji
     if token.startswith("#"):
         return False
     if token.isascii():
@@ -127,10 +125,10 @@ class Sudo(commands.Cog):
         ), inline=False)
         embed.add_field(name="`🌸` Season", value=(
             "> `!d seasonend` — trigger season end\n"
-            "> `!d seasonset <name> [emoji] [#hex]` — rename / set emoji / recolor"
+            "> `!d seasonset <n> [emoji] [#hex]` — rename / set emoji / recolor"
         ), inline=False)
         embed.add_field(name="`📢` Broadcast", value=(
-            "> `!d announce <guild_id> <msg>` — send to guild notif channel\n"
+            "> `!d announce <msg>` — send to all servers with a notif channel\n"
             "> `!d reports` — pending reports\n"
             "> `!d dismiss <id>` — dismiss a report"
         ), inline=False)
@@ -320,11 +318,6 @@ class Sudo(commands.Cog):
             !d seasonset Winter Arc ❄️
             !d seasonset Winter Arc #F2C84B
             !d seasonset Winter Arc ❄️ #F2C84B
-
-        Parser rules (applied right-to-left):
-          1. If the last token starts with # and is a valid 6-char hex → it's the color.
-          2. If the remaining last token is a non-ASCII emoji → it's the emoji.
-          3. Everything left is the season name.
         """
         season = await db.get_active_season()
         if not season:
@@ -334,7 +327,6 @@ class Sudo(commands.Cog):
         if not parts:
             return await _respond(ctx, Embeds.error("Provide a season name."))
 
-        # Step 1: strip optional hex color from the right
         color: str | None = None
         last = parts[-1].lstrip("#")
         if len(last) == 6:
@@ -348,7 +340,6 @@ class Sudo(commands.Cog):
         if not parts:
             return await _respond(ctx, Embeds.error("Provide a season name before the color."))
 
-        # Step 2: strip optional emoji from the right
         emoji: str | None = None
         if _looks_like_emoji(parts[-1]):
             emoji = parts[-1]
@@ -359,7 +350,6 @@ class Sudo(commands.Cog):
 
         name = " ".join(parts)
 
-        # Build update payload — only overwrite what was provided
         updates: dict[str, Any] = {"name": name}
         if color:
             updates["theme"] = color
@@ -371,7 +361,6 @@ class Sudo(commands.Cog):
         if color:
             embeds_module.set_color(color)
 
-        # Build confirmation message
         parts_msg = [f"Name: `{name}`"]
         if emoji:
             parts_msg.append(f"Emoji: `{emoji}`")
@@ -385,19 +374,52 @@ class Sudo(commands.Cog):
     # ── Announce / Reports ────────────────────────────────────────────────────
 
     @commands.command(name="announce")
-    async def announce(self, ctx: commands.Context[Any], guild_id: int, *, message: str) -> None:
-        config = await db.get_guild_config(guild_id)
-        if not config or not config.get("notif_channel"):
-            return await _respond(ctx, Embeds.error(f"Guild `{guild_id}` has no notification channel configured."))
-        channel = self.bot.get_channel(int(config["notif_channel"]))
-        if not channel or not isinstance(channel, discord.TextChannel):
-            return await _respond(ctx, Embeds.error("Could not find the notification channel."))
-        mention = f"<@&{config['notif_role']}> " if config.get("notif_role") else ""
+    async def announce(self, ctx: commands.Context[Any], *, message: str) -> None:
+        """Broadcast to all servers that have a notification channel configured."""
         try:
-            await channel.send(content=mention or None, embed=Embeds.base(f"> `📢` *{message}*"))
-            await _respond(ctx, Embeds.success(f"Announcement sent to guild `{guild_id}`."))
-        except discord.Forbidden:
-            await _respond(ctx, Embeds.error("Missing permissions to send in that channel."))
+            result = db.supabase.table("guildconfig").select(
+                "guild_id, notif_channel, notif_role"
+            ).not_.is_("notif_channel", "null").execute()
+            configs = result.data or []
+        except Exception as e:
+            return await _respond(ctx, Embeds.error(f"Failed to fetch guild configs: {e}"))
+
+        if not configs:
+            return await _respond(ctx, Embeds.error("No servers have a notification channel configured."))
+
+        sent    = 0
+        failed  = 0
+        skipped = 0
+
+        for raw_config in configs:
+            config = cast(dict[str, Any], raw_config)
+            notif_channel = config.get("notif_channel")
+            notif_role    = config.get("notif_role")
+            if not notif_channel:
+                skipped += 1
+                continue
+            channel = self.bot.get_channel(int(notif_channel))
+            if not channel or not isinstance(channel, discord.TextChannel):
+                skipped += 1
+                continue
+            mention = f"<@&{notif_role}> " if notif_role else ""
+            try:
+                await channel.send(
+                    content=mention or None,
+                    embed=Embeds.base(f"> `📢` *{message}*"),
+                )
+                sent += 1
+            except discord.Forbidden:
+                failed += 1
+            except Exception:
+                failed += 1
+
+        await _respond(ctx, Embeds.success(
+            f"Announcement sent.\n"
+            f"> ✅ Delivered: `{sent}`\n"
+            f"> ⚠️ No permission: `{failed}`\n"
+            f"> ⏭️ Channel not cached: `{skipped}`"
+        ))
 
     @commands.command(name="reports")
     async def reports(self, ctx: commands.Context[Any]) -> None:
@@ -494,7 +516,7 @@ class Sudo(commands.Cog):
             mem_str = "N/A"
 
         try:
-            import psutil  # type: ignore[import-untyped]
+            import psutil
             cpu_str = f"{psutil.cpu_percent(interval=0.1):.1f}%"
         except (ImportError, Exception):
             cpu_str = "N/A"
@@ -504,11 +526,11 @@ class Sudo(commands.Cog):
         embed.add_field(name="`📡` Latency",    value=f"```{latency_ms}ms```",        inline=True)
         embed.add_field(name="`🧠` Memory",     value=f"```{mem_str}```",             inline=True)
         embed.add_field(name="`⚙️` CPU",        value=f"```{cpu_str}```",             inline=True)
-        embed.add_field(name="`🏠` Guilds",     value=f"```{total_guilds}```",         inline=True)
-        embed.add_field(name="`👥` Users",      value=f"```{total_users:,}```",        inline=True)
-        embed.add_field(name="`🐍` Python",     value=f"```{sys.version[:6]}```",      inline=True)
-        embed.add_field(name="`📦` discord.py", value=f"```{discord.__version__}```",  inline=True)
-        embed.add_field(name="`🖥️` OS",        value=f"```{platform.system()}```",    inline=True)
+        embed.add_field(name="`🏠` Guilds",     value=f"```{total_guilds}```",        inline=True)
+        embed.add_field(name="`👥` Users",      value=f"```{total_users:,}```",       inline=True)
+        embed.add_field(name="`🐍` Python",     value=f"```{sys.version[:6]}```",     inline=True)
+        embed.add_field(name="`📦` discord.py", value=f"```{discord.__version__}```", inline=True)
+        embed.add_field(name="`🖥️` OS",         value=f"```{platform.system()}```",   inline=True)
         await _respond(ctx, embed)
 
     # ── Bot control ───────────────────────────────────────────────────────────
@@ -529,6 +551,16 @@ class Sudo(commands.Cog):
             await ctx.reply(embed=Embeds.info("Restart cancelled."))
             return
         await ctx.reply(embed=Embeds.success("Restarting..."))
+        try:
+            from main import _send_log
+            await _send_log(
+                "🔁 Bot Restarting",
+                f"> Restart triggered by **{ctx.author}** (`{ctx.author.id}`).\n"
+                f"> Process will restart momentarily.",
+                0xFEE75C,
+            )
+        except Exception:
+            pass
         import os
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
@@ -626,7 +658,6 @@ class Sudo(commands.Cog):
             except Exception:
                 pass
         view.on_timeout = on_timeout  # type: ignore[method-assign]
-
 
 # ── Confirm View ──────────────────────────────────────────────────────────────
 

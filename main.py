@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import sys
+import traceback
 from typing import Any
 
 import discord
@@ -34,6 +35,7 @@ INVITE:      str = (
     "https://discord.com/oauth2/authorize"
     "?client_id=1422399195062734881&permissions=8&scope=bot+applications.commands"
 )
+ERROR_LOG_CHANNEL_ID: int = 1475292266925916270
 
 if not TOKEN:
     logger.critical("DISCORD_TOKEN is not set — cannot start.")
@@ -76,9 +78,45 @@ bot = commands.Bot(
     help_command=None,
 )
 
-# Attach top.gg config so cogs can access via self.bot
 bot.topgg_token = TOPGG_TOKEN  # type: ignore[attr-defined]
 bot.bot_id      = BOT_ID       # type: ignore[attr-defined]
+
+# ── Log channel helpers ───────────────────────────────────────────────────────
+
+async def _send_log(title: str, description: str, color: int) -> None:
+    """Send a simple status embed to the error log channel."""
+    channel = bot.get_channel(ERROR_LOG_CHANNEL_ID)
+    if not channel or not isinstance(channel, discord.TextChannel):
+        return
+    embed = discord.Embed(title=title, description=description, color=color)
+    embed.timestamp = discord.utils.utcnow()
+    try:
+        await channel.send(embed=embed)
+    except Exception:
+        pass
+
+
+async def _send_error(title: str, tb: str, context: str = "") -> None:
+    """Push a formatted traceback embed to the error log channel."""
+    channel = bot.get_channel(ERROR_LOG_CHANNEL_ID)
+    if not channel or not isinstance(channel, discord.TextChannel):
+        return
+
+    max_tb = 3800
+    if len(tb) > max_tb:
+        tb = tb[-max_tb:]
+        tb = f"... (truncated)\n{tb}"
+
+    embed = discord.Embed(title=f"⚠️ {title}", color=0xFF4444)
+    if context:
+        embed.add_field(name="Context", value=f"```\n{context[:512]}\n```", inline=False)
+    embed.add_field(name="Traceback", value=f"```py\n{tb}\n```", inline=False)
+    embed.timestamp = discord.utils.utcnow()
+    try:
+        await channel.send(embed=embed)
+    except Exception:
+        pass
+
 
 # ── Global checks ─────────────────────────────────────────────────────────────
 
@@ -138,6 +176,13 @@ async def on_ready() -> None:
     logger.info("denki.startup topgg_configured=%s", bool(TOPGG_TOKEN))
     logger.info("denki.startup status=ready")
 
+    await _send_log(
+        "🟢 Bot Online",
+        f"> **{user_name}** is online and ready.\n"
+        f"> Guilds: `{len(bot.guilds)}`  ·  Commands synced: `{synced_count}`",
+        0x57F287,  # green
+    )
+
 
 @bot.event
 async def on_disconnect() -> None:
@@ -153,7 +198,6 @@ async def on_resumed() -> None:
 async def on_guild_join(guild: discord.Guild) -> None:
     await db.get_or_create_guild(guild.id)
     await db.get_or_create_guild_config(guild.id)
-    # Persist name and icon so the website can display them immediately
     icon_url = str(guild.icon.url) if guild.icon else None
     await db.update_guild_meta(guild.id, guild.name, icon_url)
     logger.info(
@@ -164,7 +208,6 @@ async def on_guild_join(guild: discord.Guild) -> None:
 
 @bot.event
 async def on_guild_update(before: discord.Guild, after: discord.Guild) -> None:
-    """Refresh name and icon in DB whenever a server changes either."""
     name_changed = before.name != after.name
     icon_changed = before.icon != after.icon
     if name_changed or icon_changed:
@@ -211,12 +254,33 @@ async def on_command_error(ctx: commands.Context[Any], error: commands.CommandEr
     if isinstance(error, commands.MissingRequiredArgument):
         await ctx.reply(embed=Embeds.error(f"Missing argument: `{error.param.name}`"))
         return
+    if isinstance(error, commands.BadArgument):
+        await ctx.reply(embed=Embeds.error(f"Bad argument: {error}"))
+        return
+
+    tb = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+    context_str = (
+        f"Command : {ctx.command}\n"
+        f"Author  : {ctx.author} ({ctx.author.id})\n"
+        f"Guild   : {ctx.guild} ({ctx.guild.id if ctx.guild else 'DM'})\n"
+        f"Message : {ctx.message.content[:200]}"
+    )
     logger.error(
         "denki.command error=%r command=%r",
         str(error), str(ctx.command),
         exc_info=error,
     )
-    await ctx.reply(embed=Embeds.error("Something went wrong. Please try again."))
+    await _send_error(f"Command Error: `{ctx.command}`", tb, context_str)
+    await ctx.reply(embed=Embeds.error("Something went wrong. The error has been logged."))
+
+
+@bot.event
+async def on_error(event: str, *args: Any, **kwargs: Any) -> None:
+    tb = traceback.format_exc()
+    if not tb or tb.strip() == "NoneType: None":
+        return
+    logger.error("denki.event error event=%r", event, exc_info=True)
+    await _send_error(f"Event Error: `{event}`", tb, f"Event: {event}")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -237,6 +301,14 @@ async def main() -> None:
             await bot.start(TOKEN)
         except asyncio.CancelledError:
             pass
+        finally:
+            # Fires on both clean shutdown and restart — bot is still connected here
+            # so the channel message will go through before the connection closes
+            await _send_log(
+                "🔴 Bot Offline",
+                "> Shutting down — connection closing.",
+                0xFF4444,  # red
+            )
 
 
 if __name__ == "__main__":
