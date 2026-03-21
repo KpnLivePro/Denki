@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date, timedelta
 from typing import Any, Optional
 
 from dotenv import load_dotenv
@@ -87,11 +87,6 @@ async def update_wallet(user_id: int, amount: int) -> dict[str, Any]:
 
 
 async def get_richest_user() -> Optional[dict[str, Any]]:
-    """
-    Return the single user with the highest wallet balance across the entire network.
-    Used by the website push to populate the hero orbit badge.
-    Returns { user_id, wallet } or None if no users exist.
-    """
     try:
         res = (
             supabase.table("users")
@@ -109,7 +104,6 @@ async def get_richest_user() -> Optional[dict[str, Any]]:
 # ── Vote streak ───────────────────────────────────────────────────────────────
 
 async def get_vote_streak(user_id: int) -> tuple[int, Optional[datetime]]:
-    """Returns (vote_streak, last_vote_at) for a user."""
     try:
         user   = await get_or_create_user(user_id)
         streak = int(user.get("vote_streak") or 0)
@@ -122,11 +116,6 @@ async def get_vote_streak(user_id: int) -> tuple[int, Optional[datetime]]:
 
 
 async def update_vote_streak(user_id: int) -> int:
-    """
-    Increment or reset the vote streak based on last_vote_at, then stamp now.
-    36h window: top.gg cooldown is 12h, 24h grace for late voters.
-    Returns the new streak value.
-    """
     try:
         streak, last_vote_at = await get_vote_streak(user_id)
         now = datetime.now(timezone.utc)
@@ -152,22 +141,10 @@ async def update_vote_streak(user_id: int) -> int:
 
 
 def calculate_streak_bonus(base: int, streak: int) -> int:
-    """
-    Apply streak multiplier to base vote reward.
-    1–2  days  → 1.0x
-    3–6  days  → 1.1x
-    7–13 days  → 1.25x
-    14–29 days → 1.5x
-    30+  days  → 2.0x
-    """
-    if streak >= 30:
-        return int(base * 2.0)
-    if streak >= 14:
-        return int(base * 1.5)
-    if streak >= 7:
-        return int(base * 1.25)
-    if streak >= 3:
-        return int(base * 1.10)
+    if streak >= 30: return int(base * 2.0)
+    if streak >= 14: return int(base * 1.5)
+    if streak >= 7:  return int(base * 1.25)
+    if streak >= 3:  return int(base * 1.10)
     return base
 
 
@@ -200,16 +177,7 @@ async def get_or_create_guild(guild_id: int) -> dict[str, Any]:
         raise
 
 
-async def update_guild_meta(
-    guild_id: int,
-    name: str,
-    icon_url: Optional[str],
-) -> None:
-    """
-    Persist the guild's display name and icon URL to the guilds table.
-    Called on on_guild_join and on_guild_update so the website always has
-    fresh data without making live Discord API calls.
-    """
+async def update_guild_meta(guild_id: int, name: str, icon_url: Optional[str]) -> None:
     try:
         await get_or_create_guild(guild_id)
         supabase.table("guilds").update({
@@ -283,13 +251,17 @@ async def get_or_create_guild_config(guild_id: int) -> dict[str, Any]:
             return config
         await get_or_create_guild(guild_id)
         res = supabase.table("guildconfig").insert({
-            "guild_id":      guild_id,
-            "daily_enabled": True,
-            "work_enabled":  True,
-            "rob_enabled":   True,
-            "notif_channel": None,
-            "notif_role":    None,
-            "shop_enabled":  False,
+            "guild_id":         guild_id,
+            "daily_enabled":    True,
+            "work_enabled":     True,
+            "rob_enabled":      True,
+            "notif_channel":    None,
+            "notif_role":       None,
+            "shop_enabled":     False,
+            "tea_ai_enabled":            False,
+            "tea_ai_seasons_remaining":  0,
+            "tea_ai_purchased_season":   None,
+            "cashback_enabled":          False,
         }).execute()
         logger.info(f"Created guildconfig for guild {guild_id}")
         return _row(res.data[0])
@@ -316,6 +288,259 @@ async def update_guild_config(guild_id: int, updates: dict[str, Any]) -> dict[st
     except Exception as e:
         logger.error(f"update_guild_config({guild_id}, {updates}): {e}")
         raise
+
+
+# ── Server upgrades ───────────────────────────────────────────────────────────
+
+TEA_AI_SEASONS = 3   # how many seasons Tea AI lasts per purchase
+
+
+async def get_guild_tea_ai(guild_id: int) -> bool:
+    """Returns True if this guild has Tea AI active (seasons_remaining > 0). Fails safe to False."""
+    try:
+        config = await get_guild_config(guild_id)
+        if not config:
+            return False
+        return int(config.get("tea_ai_seasons_remaining", 0)) > 0
+    except Exception as e:
+        logger.error(f"get_guild_tea_ai({guild_id}): {e}")
+        return False
+
+
+async def get_guild_tea_ai_seasons_remaining(guild_id: int) -> int:
+    """Returns how many seasons of Tea AI are left for this guild."""
+    try:
+        config = await get_guild_config(guild_id)
+        return int(config.get("tea_ai_seasons_remaining", 0)) if config else 0
+    except Exception as e:
+        logger.error(f"get_guild_tea_ai_seasons_remaining({guild_id}): {e}")
+        return 0
+
+
+async def get_guild_cashback(guild_id: int) -> bool:
+    """Returns True if this guild has Weekly Cashback enabled."""
+    try:
+        config = await get_guild_config(guild_id)
+        return bool(config.get("cashback_enabled", False)) if config else False
+    except Exception as e:
+        logger.error(f"get_guild_cashback({guild_id}): {e}")
+        return False
+
+
+async def apply_server_upgrade(guild_id: int, effect: str, season_id: int | None = None) -> None:
+    """
+    Apply a server_upgrade shop item effect to a guild.
+    Tea AI grants TEA_AI_SEASONS seasons — stacks if purchased again while active.
+    """
+    await get_or_create_guild_config(guild_id)
+
+    if effect == "tea_ai":
+        current = await get_guild_tea_ai_seasons_remaining(guild_id)
+        new_remaining = current + TEA_AI_SEASONS
+        supabase.table("guildconfig").update({
+            "tea_ai_enabled":           True,
+            "tea_ai_seasons_remaining": new_remaining,
+            "tea_ai_purchased_season":  season_id,
+        }).eq("guild_id", guild_id).execute()
+        logger.info(f"Tea AI enabled for guild {guild_id} — {new_remaining} seasons remaining")
+
+    elif effect == "cashback":
+        supabase.table("guildconfig").update(
+            {"cashback_enabled": True}
+        ).eq("guild_id", guild_id).execute()
+        logger.info(f"Weekly Cashback enabled for guild {guild_id}")
+
+    else:
+        raise ValueError(f"Unknown server upgrade effect: '{effect}'")
+
+
+async def tick_tea_ai_seasons() -> list[int]:
+    """
+    Called at the end of every season by run_season_end.
+    Decrements tea_ai_seasons_remaining by 1 for all active guilds.
+    Disables tea_ai_enabled on any guild that reaches 0.
+    Returns list of guild_ids whose Tea AI just expired.
+    """
+    try:
+        res = (
+            supabase.table("guildconfig")
+            .select("config_id, guild_id, tea_ai_seasons_remaining")
+            .gt("tea_ai_seasons_remaining", 0)
+            .execute()
+        )
+        rows    = _rows(res.data)
+        expired = []
+
+        for row in rows:
+            new_remaining = int(row["tea_ai_seasons_remaining"]) - 1
+            update: dict[str, Any] = {"tea_ai_seasons_remaining": new_remaining}
+            if new_remaining <= 0:
+                update["tea_ai_enabled"] = False
+                expired.append(int(row["guild_id"]))
+            supabase.table("guildconfig").update(update).eq("config_id", row["config_id"]).execute()
+
+        if expired:
+            logger.info(f"Tea AI expired for guilds: {expired}")
+        return expired
+    except Exception as e:
+        logger.error(f"tick_tea_ai_seasons(): {e}")
+        return []
+
+
+# ── Cashback ──────────────────────────────────────────────────────────────────
+
+CASHBACK_RATE      = 0.15   # 15%
+CASHBACK_LOSS_TYPES = {
+    "gamble_loss", "tea_loss", "greentea_loss",
+}
+
+
+def _current_week_start() -> date:
+    """Returns the most recent Monday as a date."""
+    today = date.today()
+    return today - timedelta(days=today.weekday())
+
+
+async def record_loss_for_cashback(user_id: int, guild_id: int, amount: int) -> None:
+    """
+    Accumulate a loss into the cashback ledger for this week.
+    Only called if the guild has cashback enabled.
+    Only tracks losses > 0.
+    """
+    if amount <= 0:
+        return
+    try:
+        week_start = _current_week_start().isoformat()
+
+        # Upsert — increment total_lost if row exists, create if not
+        existing = (
+            supabase.table("cashback")
+            .select("cashback_id, total_lost")
+            .eq("user_id",    user_id)
+            .eq("guild_id",   guild_id)
+            .eq("week_start", week_start)
+            .execute()
+        )
+        if existing.data:
+            row = _row(existing.data[0])
+            supabase.table("cashback").update({
+                "total_lost": int(row["total_lost"]) + amount
+            }).eq("cashback_id", row["cashback_id"]).execute()
+        else:
+            supabase.table("cashback").insert({
+                "user_id":    user_id,
+                "guild_id":   guild_id,
+                "week_start": week_start,
+                "total_lost": amount,
+                "paid_out":   0,
+            }).execute()
+    except Exception as e:
+        logger.error(f"record_loss_for_cashback({user_id}, {guild_id}, {amount}): {e}")
+
+
+async def get_cashback_claim(user_id: int, guild_id: int) -> Optional[dict[str, Any]]:
+    """
+    Returns the claimable cashback row for this week if:
+    - It's Monday UTC
+    - The window is 12am–8am UTC
+    - The row hasn't been claimed yet
+    - paid_out is 0 (unclaimed)
+    """
+    try:
+        now        = datetime.now(timezone.utc)
+        week_start = _current_week_start().isoformat()
+
+        # Must be Monday (weekday 0) between 00:00–08:00 UTC
+        if now.weekday() != 0 or now.hour >= 8:
+            return None
+
+        res = (
+            supabase.table("cashback")
+            .select("*")
+            .eq("user_id",    user_id)
+            .eq("guild_id",   guild_id)
+            .eq("week_start", week_start)
+            .is_("claimed_at", "null")
+            .execute()
+        )
+        return _row(res.data[0]) if res.data else None
+    except Exception as e:
+        logger.error(f"get_cashback_claim({user_id}, {guild_id}): {e}")
+        return None
+
+
+async def claim_cashback(user_id: int, guild_id: int) -> Optional[int]:
+    """
+    Pays out 15% of this week's losses to the user's wallet.
+    Returns the amount paid, or None if nothing to claim.
+    """
+    try:
+        row = await get_cashback_claim(user_id, guild_id)
+        if not row:
+            return None
+
+        total_lost = int(row["total_lost"])
+        if total_lost <= 0:
+            return None
+
+        payout = max(1, int(total_lost * CASHBACK_RATE))
+
+        await update_wallet(user_id, payout)
+        await log_transaction(0, user_id, payout, "cashback_payout")
+
+        supabase.table("cashback").update({
+            "paid_out":   payout,
+            "claimed_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("cashback_id", row["cashback_id"]).execute()
+
+        logger.info(f"Cashback claimed user={user_id} guild={guild_id} payout=¥{payout:,}")
+        return payout
+    except Exception as e:
+        logger.error(f"claim_cashback({user_id}, {guild_id}): {e}")
+        return None
+
+
+async def get_cashback_summary(user_id: int, guild_id: int) -> dict[str, Any]:
+    """
+    Returns a summary of the user's cashback status for the current week.
+    Used by /cashback to show the user what they have pending.
+    """
+    try:
+        now        = datetime.now(timezone.utc)
+        week_start = _current_week_start().isoformat()
+
+        res = (
+            supabase.table("cashback")
+            .select("*")
+            .eq("user_id",    user_id)
+            .eq("guild_id",   guild_id)
+            .eq("week_start", week_start)
+            .execute()
+        )
+
+        if not res.data:
+            return {"total_lost": 0, "paid_out": 0, "claimed": False, "claimable": False, "payout": 0}
+
+        row         = _row(res.data[0])
+        total_lost  = int(row["total_lost"])
+        paid_out    = int(row["paid_out"])
+        claimed     = row.get("claimed_at") is not None
+        is_monday   = now.weekday() == 0
+        in_window   = is_monday and now.hour < 8
+        claimable   = in_window and not claimed and total_lost > 0
+        payout      = max(1, int(total_lost * CASHBACK_RATE)) if total_lost > 0 else 0
+
+        return {
+            "total_lost": total_lost,
+            "paid_out":   paid_out,
+            "claimed":    claimed,
+            "claimable":  claimable,
+            "payout":     payout,
+            "in_window":  in_window,
+        }
+    except Exception as e:
+        logger.error(f"get_cashback_summary({user_id}, {guild_id}): {e}")
+        return {"total_lost": 0, "paid_out": 0, "claimed": False, "claimable": False, "payout": 0}
 
 
 # ── Seasons ───────────────────────────────────────────────────────────────────
@@ -479,7 +704,6 @@ async def get_season_vault_total(guild_id: int, season_id: int) -> int:
 # ── Cooldowns ─────────────────────────────────────────────────────────────────
 
 async def get_cooldown(user_id: int, cooldown_type: str) -> Optional[datetime]:
-    """cooldown_type: 'daily' | 'work' | 'rob' | 'vote'"""
     try:
         res = (
             supabase.table("cooldowns")
@@ -569,6 +793,7 @@ async def create_shop_item(
     price: int,
     item_type: str,
     role_id: Optional[int] = None,
+    effect: Optional[str] = None,
 ) -> dict[str, Any]:
     try:
         res = supabase.table("shopitems").insert({
@@ -578,6 +803,7 @@ async def create_shop_item(
             "price":       price,
             "type":        item_type,
             "role_id":     role_id,
+            "effect":      effect,
             "active":      True,
         }).execute()
         logger.info(f"Created shop item '{name}' for guild {guild_id}")
@@ -898,15 +1124,9 @@ async def open_server_shop(guild_id: int, season_id: int) -> dict[str, Any]:
 # ── top.gg ────────────────────────────────────────────────────────────────────
 
 async def check_topgg_vote(user_id: int, bot_id: int, topgg_token: str) -> dict:
-    """
-    Call top.gg REST API to check if a user has voted.
-    Returns { "voted": bool, "isWeekend": bool }
-    """
     import aiohttp
-
     url     = f"https://top.gg/api/bots/{bot_id}/check?userId={user_id}"
     headers = {"Authorization": topgg_token}
-
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as resp:
             if resp.status == 200:

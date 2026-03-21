@@ -17,7 +17,6 @@ from cogs.notifications import notify_season_start, notify_vault_payout, notify_
 
 logger = logging.getLogger("denki.seasons")
 
-# Season bonus payouts by rank (0-indexed)
 SEASON_BONUSES: list[int] = [5_000, 3_000, 1_500]
 
 
@@ -36,15 +35,14 @@ async def _respond(
         await ctx_or_interaction.reply(embed=embed)
 
 
-
 async def _defer(ctx_or_interaction: Any, is_slash: bool, ephemeral: bool = False) -> None:
-    """Defer a slash interaction immediately to extend the 3-second response window."""
     if is_slash and not ctx_or_interaction.response.is_done():
         await ctx_or_interaction.response.defer(ephemeral=ephemeral)
 
+
 async def run_season_end(bot: commands.Bot, season: dict) -> None:
     """
-    Core season end logic. Called by the background task or sudo /season end.
+    Core season end logic. Called by the background task or sudo /seasonend.
 
     Steps:
     1. Fetch all guilds that have banks in this season
@@ -52,7 +50,8 @@ async def run_season_end(bot: commands.Bot, season: dict) -> None:
     3. Close the season
     4. Create a new season
     5. Refresh embed color cache
-    6. Fire notifications to each guild's configured channel
+    6. Tick Tea AI season counters — expire guilds that have used up their 3 seasons
+    7. Fire notifications to each guild's configured channel
     """
     season_id: int   = int(season["season_id"])
     season_name: str = str(season["name"])
@@ -84,6 +83,27 @@ async def run_season_end(bot: commands.Bot, season: dict) -> None:
     # Refresh color cache to bronze default until sudo sets new color
     await embeds_module.refresh_season_color()
 
+    # Tick Tea AI season counters — decrement and expire where needed
+    expired_guilds = await db.tick_tea_ai_seasons()
+    if expired_guilds:
+        logger.info(f"Tea AI expired for {len(expired_guilds)} guild(s): {expired_guilds}")
+        for guild_id in expired_guilds:
+            try:
+                config = await db.get_guild_config(guild_id)
+                if config and config.get("notif_channel"):
+                    channel = bot.get_channel(int(config["notif_channel"]))
+                    if channel and isinstance(channel, discord.TextChannel):
+                        mention = f"<@&{config['notif_role']}> " if config.get("notif_role") else ""
+                        await channel.send(
+                            content=mention or None,
+                            embed=Embeds.base(
+                                "> `🤖` *Your server's **Tea AI** subscription has expired.*\n"
+                                "> Purchase it again from `/shop` to re-enable AI validation."
+                            ),
+                        )
+            except Exception as e:
+                logger.error(f"Failed to send Tea AI expiry notice to guild {guild_id}: {e}")
+
     # Announce new season to all guilds
     await notify_season_start(bot, new_season)
 
@@ -99,17 +119,16 @@ async def _process_guild_season_end(
     if not top_investors:
         return
 
-    bonuses: dict[int, int] = {}
+    bonuses:  dict[int, int] = {}
     name_map: dict[int, str] = {}
 
     for i, row in enumerate(top_investors):
-        uid = int(row["user_id"])
+        uid   = int(row["user_id"])
         bonus = SEASON_BONUSES[i] if i < len(SEASON_BONUSES) else 0
 
         if bonus > 0:
             await db.update_wallet(uid, bonus)
             await db.log_transaction(0, uid, bonus, "season_bonus")
-            # Credit bonus to total_earned on the bank record so stats are accurate
             season_bank = await db.get_bank(uid, guild_id, season_id)
             if season_bank:
                 db.supabase.table("banks").update({
@@ -117,7 +136,6 @@ async def _process_guild_season_end(
                 }).eq("bank_id", season_bank["bank_id"]).execute()
             bonuses[uid] = bonus
 
-        # Resolve display name
         discord_guild = bot.get_guild(guild_id)
         if discord_guild:
             member = discord_guild.get_member(uid)
@@ -125,19 +143,16 @@ async def _process_guild_season_end(
         else:
             name_map[uid] = f"User {uid}"
 
-    # Update guild win streak and tier
     guild_data = await db.get_guild(guild_id)
     if guild_data and guild_data.get("global"):
-        updated = await db.increment_guild_wins(guild_id)
+        updated  = await db.increment_guild_wins(guild_id)
         new_tier = int(updated["tier"])
         await notify_tier_change(bot, guild_id, new_tier=new_tier, won=True)
     else:
-        # Non-global guilds don't participate in win streaks; only reset if they somehow had wins
         if guild_data and int(guild_data.get("wins", 0)) > 0:
             await db.reset_guild_wins(guild_id)
             await notify_tier_change(bot, guild_id, new_tier=1, won=False)
 
-    # Fire vault payout notification
     await notify_vault_payout(
         bot=bot,
         guild_id=guild_id,
@@ -160,8 +175,6 @@ class Seasons(commands.Cog):
 
     async def cog_unload(self) -> None:
         self.season_check_loop.cancel()
-
-    # Background task — checks every hour if season has expired
 
     @tasks.loop(hours=1)
     async def season_check_loop(self) -> None:
@@ -186,8 +199,6 @@ class Seasons(commands.Cog):
     async def before_season_check(self) -> None:
         await self.bot.wait_until_ready()
 
-    # /season — view current season info
-
     @app_commands.command(name="season", description="View the current season info.")
     async def season_slash(self, interaction: discord.Interaction) -> None:
         await self._season(interaction, is_slash=True)
@@ -206,9 +217,9 @@ class Seasons(commands.Cog):
                 is_slash,
             )
 
-        guild_id: int = ctx_or_interaction.guild.id
+        guild_id:  int = ctx_or_interaction.guild.id
         season_id: int = int(season["season_id"])
-        vault_total = await db.get_season_vault_total(guild_id, season_id)
+        vault_total    = await db.get_season_vault_total(guild_id, season_id)
 
         embed = Embeds.season_info(season=season, vault_total=vault_total)
         await _respond(ctx_or_interaction, embed, is_slash)

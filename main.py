@@ -35,7 +35,6 @@ INVITE:      str = (
     "https://discord.com/oauth2/authorize"
     "?client_id=1422399195062734881&permissions=8&scope=bot+applications.commands"
 )
-ERROR_LOG_CHANNEL_ID: int = 1475292266925916270
 
 if not TOKEN:
     logger.critical("DISCORD_TOKEN is not set — cannot start.")
@@ -50,6 +49,7 @@ if not TOPGG_TOKEN:
 # ── Cogs ──────────────────────────────────────────────────────────────────────
 
 COGS: list[str] = [
+    "cogs.logz",      # must be first — attaches bot.logz before other cogs need it
     "cogs.help",
     "cogs.init",
     "cogs.economy",
@@ -81,42 +81,6 @@ bot = commands.Bot(
 bot.topgg_token = TOPGG_TOKEN  # type: ignore[attr-defined]
 bot.bot_id      = BOT_ID       # type: ignore[attr-defined]
 
-# ── Log channel helpers ───────────────────────────────────────────────────────
-
-async def _send_log(title: str, description: str, color: int) -> None:
-    """Send a simple status embed to the error log channel."""
-    channel = bot.get_channel(ERROR_LOG_CHANNEL_ID)
-    if not channel or not isinstance(channel, discord.TextChannel):
-        return
-    embed = discord.Embed(title=title, description=description, color=color)
-    embed.timestamp = discord.utils.utcnow()
-    try:
-        await channel.send(embed=embed)
-    except Exception:
-        pass
-
-
-async def _send_error(title: str, tb: str, context: str = "") -> None:
-    """Push a formatted traceback embed to the error log channel."""
-    channel = bot.get_channel(ERROR_LOG_CHANNEL_ID)
-    if not channel or not isinstance(channel, discord.TextChannel):
-        return
-
-    max_tb = 3800
-    if len(tb) > max_tb:
-        tb = tb[-max_tb:]
-        tb = f"... (truncated)\n{tb}"
-
-    embed = discord.Embed(title=f"⚠️ {title}", color=0xFF4444)
-    if context:
-        embed.add_field(name="Context", value=f"```\n{context[:512]}\n```", inline=False)
-    embed.add_field(name="Traceback", value=f"```py\n{tb}\n```", inline=False)
-    embed.timestamp = discord.utils.utcnow()
-    try:
-        await channel.send(embed=embed)
-    except Exception:
-        pass
-
 
 # ── Global checks ─────────────────────────────────────────────────────────────
 
@@ -144,6 +108,7 @@ async def slash_ban_check(interaction: discord.Interaction) -> bool:
     return True
 
 bot.tree.interaction_check = slash_ban_check  # type: ignore[assignment]
+
 
 # ── Events ────────────────────────────────────────────────────────────────────
 
@@ -176,12 +141,9 @@ async def on_ready() -> None:
     logger.info("denki.startup topgg_configured=%s", bool(TOPGG_TOKEN))
     logger.info("denki.startup status=ready")
 
-    await _send_log(
-        "🟢 Bot Online",
-        f"> **{user_name}** is online and ready.\n"
-        f"> Guilds: `{len(bot.guilds)}`  ·  Commands synced: `{synced_count}`",
-        0x57F287,  # green
-    )
+    # Send online notification via bot.logz if available
+    if hasattr(bot, "log"):
+        await bot.logz.online(len(bot.guilds), synced_count)  # type: ignore[attr-defined]
 
 
 @bot.event
@@ -204,6 +166,21 @@ async def on_guild_join(guild: discord.Guild) -> None:
         "denki.guild action=join id=%d name=%r members=%d",
         guild.id, guild.name, guild.member_count or 0,
     )
+    if hasattr(bot, "log"):
+        await bot.logz.info(  # type: ignore[attr-defined]
+            "Guild Joined",
+            f"> **{guild.name}** (`{guild.id}`)\n> Members: `{guild.member_count or 0}`",
+        )
+
+
+@bot.event
+async def on_guild_remove(guild: discord.Guild) -> None:
+    logger.info("denki.guild action=leave id=%d name=%r", guild.id, guild.name)
+    if hasattr(bot, "log"):
+        await bot.logz.warn(  # type: ignore[attr-defined]
+            "Guild Left",
+            f"> **{guild.name}** (`{guild.id}`)",
+        )
 
 
 @bot.event
@@ -243,6 +220,7 @@ async def on_member_remove(member: discord.Member) -> None:
 
 @bot.event
 async def on_command_error(ctx: commands.Context[Any], error: commands.CommandError) -> None:
+    # Gracefully handled errors — just reply, don't log to channel
     if isinstance(error, commands.CommandNotFound):
         return
     if isinstance(error, commands.NotOwner):
@@ -257,20 +235,13 @@ async def on_command_error(ctx: commands.Context[Any], error: commands.CommandEr
     if isinstance(error, commands.BadArgument):
         await ctx.reply(embed=Embeds.error(f"Bad argument: {error}"))
         return
+    if isinstance(error, commands.CheckFailure):
+        return
 
-    tb = "".join(traceback.format_exception(type(error), error, error.__traceback__))
-    context_str = (
-        f"Command : {ctx.command}\n"
-        f"Author  : {ctx.author} ({ctx.author.id})\n"
-        f"Guild   : {ctx.guild} ({ctx.guild.id if ctx.guild else 'DM'})\n"
-        f"Message : {ctx.message.content[:200]}"
-    )
-    logger.error(
-        "denki.command error=%r command=%r",
-        str(error), str(ctx.command),
-        exc_info=error,
-    )
-    await _send_error(f"Command Error: `{ctx.command}`", tb, context_str)
+    # Unexpected error — log to channel and reply to user
+    # cogs/logging.py on_command_error also fires, but that skips these same
+    # ignored types so there's no double-logging
+    logger.error("denki.command error=%r command=%r", str(error), str(ctx.command), exc_info=error)
     await ctx.reply(embed=Embeds.error("Something went wrong. The error has been logged."))
 
 
@@ -280,7 +251,12 @@ async def on_error(event: str, *args: Any, **kwargs: Any) -> None:
     if not tb or tb.strip() == "NoneType: None":
         return
     logger.error("denki.event error event=%r", event, exc_info=True)
-    await _send_error(f"Event Error: `{event}`", tb, f"Event: {event}")
+    if hasattr(bot, "log"):
+        await bot.logz.error(  # type: ignore[attr-defined]
+            f"Event Error — `{event}`",
+            tb[:500],
+            context=f"Event: {event}",
+        )
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -296,19 +272,17 @@ async def main() -> None:
                     "denki.cog action=failed name=%s error=%r",
                     cog, str(e), exc_info=e,
                 )
+                # Try to notify via log channel if logging cog already loaded
+                if hasattr(bot, "log"):
+                    await bot.logz.cog_fail(cog, e)  # type: ignore[attr-defined]
 
         try:
             await bot.start(TOKEN)
         except asyncio.CancelledError:
             pass
         finally:
-            # Fires on both clean shutdown and restart — bot is still connected here
-            # so the channel message will go through before the connection closes
-            await _send_log(
-                "🔴 Bot Offline",
-                "> Shutting down — connection closing.",
-                0xFF4444,  # red
-            )
+            if hasattr(bot, "log"):
+                await bot.logz.offline()  # type: ignore[attr-defined]
 
 
 if __name__ == "__main__":

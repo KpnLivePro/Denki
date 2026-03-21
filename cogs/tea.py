@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import random
 from dataclasses import dataclass
 from typing import Any
@@ -20,6 +21,9 @@ logger = logging.getLogger("denki.tea")
 
 DATAMUSE_API   = "https://api.datamuse.com/words?sp={pattern}&max=100"
 DICTIONARY_API = "https://api.dictionaryapi.dev/api/v2/entries/en/{word}"
+GROQ_API_URL   = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODEL     = "llama-3.1-8b-instant"
+GROQ_API_KEY   = os.environ.get("GROQ_API_KEY", "")
 
 WORD_LENGTHS = [4, 5, 6, 7]
 
@@ -30,8 +34,8 @@ MIN_PLAYERS        = 2
 LOBBY_TIMEOUT      = 300
 MAX_LIVES          = 3
 GREEN_ROUNDS       = 10
-MAX_ROUNDS         = 50          # safety cap — prevents runaway games
-MAX_FETCH_FAILURES = 3           # consecutive word-fetch failures before abort
+MAX_ROUNDS         = 50
+MAX_FETCH_FAILURES = 3
 
 GREEN_POINTS_FIRST  = 10
 GREEN_POINTS_SECOND = 7
@@ -48,6 +52,10 @@ TEA_META = {
 
 _active_games: dict[int, "TeaGame"] = {}
 _active_users: dict[int, int] = {}
+
+# Validation cache — avoids repeat API calls for the same answer/word combination
+_validation_cache: dict[str, bool] = {}
+MAX_CACHE_SIZE = 1000
 
 
 # ── API helpers ───────────────────────────────────────────────────────────────
@@ -115,10 +123,103 @@ def scramble(word: str) -> str:
 
 def make_fill(word: str) -> str:
     indices = list(range(len(word)))
-    # Hide at least half but always reveal at least 1 letter
     n_hidden = max(1, min(len(word) - 1, len(word) // 2))
     hidden = set(random.sample(indices, n_hidden))
     return "  ".join("_" if i in hidden else c.upper() for i, c in enumerate(word))
+
+
+# ── AI validation (Groq) ──────────────────────────────────────────────────────
+
+async def ai_validate(tea_type: str, word: str, answer: str, challenge: str) -> bool | None:
+    """
+    Ask Groq to validate a player's answer.
+    Returns True/False, or None if the call fails (signals caller to fall back to dictionary).
+    Results are cached to avoid burning quota on repeated answers.
+    """
+    if not GROQ_API_KEY:
+        return None
+
+    cache_key = f"{tea_type}:{word}:{answer}"
+    if cache_key in _validation_cache:
+        return _validation_cache[cache_key]
+
+    prompts: dict[str, str] = {
+        "black": (
+            f"A player was shown the letters: {challenge}\n"
+            f"They answered: '{answer}'\n"
+            f"Is '{answer}' a real English word that contains ALL of these letters: {challenge}? "
+            f"Answer only YES or NO."
+        ),
+        "green": (
+            f"A player was shown the letters: {challenge}\n"
+            f"They answered: '{answer}'\n"
+            f"Is '{answer}' a real English word that contains ALL of these letters: {challenge}? "
+            f"Answer only YES or NO."
+        ),
+        "white": (
+            f"The correct answer is '{word}'. A player answered '{answer}'. "
+            f"Are these the same word, accounting for a single typo (1 character off)? "
+            f"Answer only YES or NO."
+        ),
+        "blue": (
+            f"The correct answer is '{word}'. A player answered '{answer}'. "
+            f"Are these the same word, accounting for a single typo (1 character off)? "
+            f"Answer only YES or NO."
+        ),
+        "red": (
+            f"The letters to unscramble are: {challenge}\n"
+            f"A player answered: '{answer}'\n"
+            f"Is '{answer}' a real English word that uses exactly those letters rearranged? "
+            f"Answer only YES or NO."
+        ),
+    }
+
+    prompt = prompts.get(tea_type)
+    if not prompt:
+        return None
+
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(
+                GROQ_API_URL,
+                headers={
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                    "Content-Type":  "application/json",
+                },
+                json={
+                    "model": GROQ_MODEL,
+                    "messages": [
+                        {
+                            "role":    "system",
+                            "content": (
+                                "You are a strict word game judge. "
+                                "Answer only YES or NO — no explanation, no punctuation."
+                            ),
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    "max_tokens":  5,
+                    "temperature": 0,
+                },
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as r:
+                if r.status == 200:
+                    data   = await r.json()
+                    reply  = data["choices"][0]["message"]["content"].strip().upper()
+                    result = reply.startswith("YES")
+
+                    # Cache the result
+                    if len(_validation_cache) >= MAX_CACHE_SIZE:
+                        keys = list(_validation_cache.keys())
+                        for k in keys[:MAX_CACHE_SIZE // 5]:
+                            del _validation_cache[k]
+                    _validation_cache[cache_key] = result
+                    return result
+
+    except Exception as e:
+        logger.error("ai_validate(%s, %s): %s", tea_type, answer, e)
+
+    return None
 
 
 # ── Player ────────────────────────────────────────────────────────────────────
@@ -158,6 +259,7 @@ class TeaGame:
         min_bet: int,
         max_players: int,
         time_limit: int,
+        use_ai: bool = False,
     ) -> None:
         self.channel     = channel
         self.host        = host
@@ -165,14 +267,15 @@ class TeaGame:
         self.min_bet     = min_bet
         self.max_players = max_players
         self.time_limit  = time_limit
+        self.use_ai      = use_ai
         self.players:    list[TeaPlayer] = []
         self.used_words: set[str]        = set()
         self.round       = 0
         self.lobby_msg:  discord.Message | None = None
-        self.current_word             = ""
-        self.current_challenge_letters: list[str] = []  # FIX: stored per-round
-        self.started     = False
-        self.finished    = False
+        self.current_word              = ""
+        self.current_challenge_letters: list[str] = []
+        self.started         = False
+        self.finished        = False
         self._fetch_failures = 0
 
     @property
@@ -191,6 +294,7 @@ class TeaGame:
 
     def lobby_embed(self) -> discord.Embed:
         m = self.meta()
+        ai_badge = "  •  `✨ AI`" if self.use_ai else ""
         player_lines = (
             "\n".join(f"> {p.member.display_name} — `¥{p.bet:,}`" for p in self.players)
             if self.players else "> *No players yet — be the first to join!*"
@@ -198,31 +302,32 @@ class TeaGame:
         embed = Embeds.base(
             f"> `{m['emoji']}` *{m['color']} Tea — {m['desc']}*\n\n"
             f"> Min bet: `¥{self.min_bet:,}`  •  Players: `{len(self.players)}/{self.max_players}`"
-            f"  •  `{self.time_limit}s` per round\n\n"
+            f"  •  `{self.time_limit}s` per round{ai_badge}\n\n"
             + player_lines
         )
         embed.set_footer(text=f"Host: {self.host.display_name}  •  Starts when host clicks Start or {self.max_players} players join")
         return embed
 
     def round_embed(self, challenge: str, hint: str) -> discord.Embed:
-        m = self.meta()
+        m        = self.meta()
         is_green = self.tea_type == "green"
-        lines = []
+        lines    = []
         for p in (self.players if is_green else self.alive_players):
             status = "⌛" if not p.answered else ("✅" if p.valid else "❌")
             suffix = f"  {p.hearts}" if not is_green else f"  `{p.points}pts`"
             lines.append(f"> {status} {p.member.display_name}{suffix}")
+        ai_footer = "  •  ✨ AI Validation" if self.use_ai else ""
         embed = Embeds.base(
             f"> `{m['emoji']}` *{m['color']} Tea — Round {self.round}*\n\n"
             f"> **{challenge}**\n"
             f"> *{hint}*\n\n"
             + "\n".join(lines)
         )
-        embed.set_footer(text=f"Type your answer here  •  {self.time_limit}s  •  Pot: ¥{self.pot:,}")
+        embed.set_footer(text=f"Type your answer here  •  {self.time_limit}s  •  Pot: ¥{self.pot:,}{ai_footer}")
         return embed
 
     def results_embed(self, results: list[tuple[TeaPlayer, bool, str]]) -> discord.Embed:
-        m = self.meta()
+        m     = self.meta()
         lines = []
         for p, valid, ans in results:
             icon   = "✅" if valid else "❌"
@@ -289,11 +394,15 @@ class JoinModal(discord.ui.Modal, title="Join Tea Game"):
             return await interaction.response.send_message(embed=Embeds.error("Invalid amount."), ephemeral=True)
 
         if bet < self.game.min_bet:
-            return await interaction.response.send_message(embed=Embeds.error(f"Minimum bet is ¥{self.game.min_bet:,}."), ephemeral=True)
+            return await interaction.response.send_message(
+                embed=Embeds.error(f"Minimum bet is ¥{self.game.min_bet:,}."), ephemeral=True
+            )
 
         user_data = await db.get_or_create_user(interaction.user.id)
         if int(user_data["wallet"]) < bet:
-            return await interaction.response.send_message(embed=Embeds.error(f"Insufficient funds. Wallet: ¥{int(user_data['wallet']):,}."), ephemeral=True)
+            return await interaction.response.send_message(
+                embed=Embeds.error(f"Insufficient funds. Wallet: ¥{int(user_data['wallet']):,}."), ephemeral=True
+            )
 
         await db.update_wallet(interaction.user.id, -bet)
 
@@ -322,7 +431,11 @@ async def run_game(game: TeaGame, bot: commands.Bot) -> None:
     if game.lobby_msg:
         try:
             await game.lobby_msg.edit(
-                embed=Embeds.base(f"> `{game.meta()['emoji']}` *{game.meta()['color']} Tea starting with {len(game.players)} players!*"),
+                embed=Embeds.base(
+                    f"> `{game.meta()['emoji']}` *{game.meta()['color']} Tea starting "
+                    f"with {len(game.players)} players!*"
+                    + ("  `✨ AI on`" if game.use_ai else "")
+                ),
                 view=None,
             )
         except discord.HTTPException:
@@ -333,7 +446,6 @@ async def run_game(game: TeaGame, bot: commands.Bot) -> None:
     is_green = game.tea_type == "green"
 
     while game.round < MAX_ROUNDS:
-        # End conditions
         if is_green and game.round >= GREEN_ROUNDS:
             break
         if not is_green and len(game.alive_players) <= 1:
@@ -367,7 +479,7 @@ async def run_game(game: TeaGame, bot: commands.Bot) -> None:
             continue
 
         game._fetch_failures = 0
-        game.current_word = word
+        game.current_word    = word
         game.used_words.add(word)
 
         # Reset answers
@@ -377,7 +489,6 @@ async def run_game(game: TeaGame, bot: commands.Bot) -> None:
             p.valid       = False
             p.answer_time = 0.0
 
-        # Build challenge — also stores challenge letters on game object
         challenge, hint = await _build_challenge(game, word)
 
         try:
@@ -390,7 +501,7 @@ async def run_game(game: TeaGame, bot: commands.Bot) -> None:
             await _cancel_game(game, "Network error — bets refunded.")
             return
 
-        loop = asyncio.get_running_loop()
+        loop       = asyncio.get_running_loop()
         start_time = loop.time()
         await _collect_answers(game, bot, start_time)
 
@@ -436,10 +547,6 @@ async def _fetch_word(game: TeaGame) -> str | None:
 
 
 async def _build_challenge(game: TeaGame, word: str) -> tuple[str, str]:
-    """
-    Build the round challenge and store the revealed letters on game.current_challenge_letters
-    so _score_round can validate against what players were actually shown.
-    """
     if game.tea_type in ("black", "green"):
         letters = random.sample(list(set(word.upper())), min(3, len(set(word))))
         game.current_challenge_letters = [l.lower() for l in letters]
@@ -452,15 +559,11 @@ async def _build_challenge(game: TeaGame, word: str) -> tuple[str, str]:
 
     elif game.tea_type == "white":
         game.current_challenge_letters = []
-        challenge = make_fill(word)
-        hint = "Fill in the missing letters"
-        return challenge, hint
+        return make_fill(word), "Fill in the missing letters"
 
     elif game.tea_type == "red":
         game.current_challenge_letters = []
-        challenge = scramble(word)
-        hint = f"Unscramble these letters into any valid word  •  {len(word)} letters"
-        return challenge, hint
+        return scramble(word), f"Unscramble these letters into any valid word  •  {len(word)} letters"
 
     else:  # blue
         game.current_challenge_letters = []
@@ -469,7 +572,6 @@ async def _build_challenge(game: TeaGame, word: str) -> tuple[str, str]:
             ex = get_example(data, word)
             if ex:
                 return ex, f"Guess the missing word  •  {len(word)} letters"
-        # Fallback: skip this round rather than showing an unplayable prompt
         return f"*___ ({len(word)} letters)*", "Guess the word"
 
 
@@ -507,8 +609,9 @@ async def _score_round(
     word: str,
     is_green: bool,
 ) -> list[tuple[TeaPlayer, bool, str]]:
-    results: list[tuple[TeaPlayer, bool, str]] = []
-    pool = game.players if is_green else game.alive_players
+    results:       list[tuple[TeaPlayer, bool, str]] = []
+    pool           = game.players if is_green else game.alive_players
+    challenge_str  = "  ".join(game.current_challenge_letters)
 
     for player in pool:
         answer = player.answer.strip().lower()
@@ -521,16 +624,34 @@ async def _score_round(
             continue
 
         if game.tea_type in ("black", "green"):
-            # Validate against the letters that were SHOWN, not all letters in the word
             shown_letters = game.current_challenge_letters
-            contains_all  = all(l in answer for l in shown_letters)
-            valid = contains_all and len(answer) >= 3 and await validate_word(answer)
+            # Quick local check first — reject immediately if letters aren't present
+            if not (all(l in answer for l in shown_letters) and len(answer) >= 3):
+                valid = False
+            elif game.use_ai:
+                ai_result = await ai_validate(game.tea_type, word, answer, challenge_str)
+                valid = ai_result if ai_result is not None else await validate_word(answer)
+            else:
+                valid = await validate_word(answer)
 
         elif game.tea_type in ("white", "blue"):
-            valid = answer == word.lower()
+            if answer == word.lower():
+                valid = True
+            elif game.use_ai:
+                # AI provides typo forgiveness for white/blue
+                ai_result = await ai_validate(game.tea_type, word, answer, challenge_str)
+                valid = ai_result if ai_result is not None else False
+            else:
+                valid = False
 
         else:  # red
-            valid = sorted(answer) == sorted(word.lower()) and await validate_word(answer)
+            if not (sorted(answer) == sorted(word.lower())):
+                valid = False
+            elif game.use_ai:
+                ai_result = await ai_validate(game.tea_type, word, answer, challenge_str)
+                valid = ai_result if ai_result is not None else await validate_word(answer)
+            else:
+                valid = await validate_word(answer)
 
         player.valid = valid
         if not valid and not is_green:
@@ -555,6 +676,9 @@ async def _end_game(game: TeaGame, is_green: bool) -> None:
     pot = game.pot
     m   = game.meta()
 
+    # Record losses for cashback if the guild has it enabled
+    cashback_enabled = await db.get_guild_cashback(game.channel.guild.id)
+
     if is_green:
         ranked = sorted(game.players, key=lambda p: p.points, reverse=True)
         if not ranked:
@@ -577,11 +701,14 @@ async def _end_game(game: TeaGame, is_green: bool) -> None:
 
         await db.update_wallet(winner.member.id, pot)
         await db.log_transaction(0, winner.member.id, pot, "greentea_win")
+
         for p in game.players:
             if p.member.id != winner.member.id and p.member.id not in refunded:
                 await db.log_transaction(p.member.id, 0, p.bet, "greentea_loss")
+                if cashback_enabled:
+                    await db.record_loss_for_cashback(p.member.id, game.channel.guild.id, p.bet)
 
-        lines = []
+        lines  = []
         medals = ["🥇", "🥈", "🥉"]
         for i, p in enumerate(ranked[:3]):
             note = f"wins `¥{pot:,}`" if i == 0 else f"bet refunded `¥{p.bet:,}`"
@@ -602,12 +729,13 @@ async def _end_game(game: TeaGame, is_green: bool) -> None:
             for p in game.players:
                 if p.member.id != winner.member.id:
                     await db.log_transaction(p.member.id, 0, p.bet, "tea_loss")
+                    if cashback_enabled:
+                        await db.record_loss_for_cashback(p.member.id, game.channel.guild.id, p.bet)
             embed = Embeds.base(
                 f"> `{m['emoji']}` *{m['color']} Tea — {winner.member.display_name} wins!*\n\n"
                 f"> Prize: `¥{pot:,}`  •  Rounds: `{game.round}`"
             )
         else:
-            # Tie — split proportionally by bet
             total_bets = sum(p.bet for p in alive)
             lines = []
             for p in alive:
@@ -715,6 +843,9 @@ class Tea(commands.Cog):
                     ephemeral=True,
                 )
 
+        # Check premium AI flag for this guild
+        use_ai = await db.get_guild_tea_ai(interaction.guild.id)
+
         game = TeaGame(
             channel=interaction.channel,
             host=member,
@@ -722,6 +853,7 @@ class Tea(commands.Cog):
             min_bet=min_bet,
             max_players=max_players,
             time_limit=time_limit,
+            use_ai=use_ai,
         )
         _active_games[interaction.channel.id] = game
 

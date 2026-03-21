@@ -51,21 +51,27 @@ class Admin(commands.Cog):
         guild  = ctx_or_interaction.guild
         config = await db.get_or_create_guild_config(guild.id)
 
-        notif_channel = f"<#{config['notif_channel']}>" if config.get("notif_channel") else "`Not set`"
-        notif_role    = f"<@&{config['notif_role']}>"   if config.get("notif_role")    else "`Not set`"
-        shop_status   = "`Open`"    if config["shop_enabled"]  else "`Closed`"
-        daily_status  = "`Enabled`" if config["daily_enabled"] else "`Disabled`"
-        work_status   = "`Enabled`" if config["work_enabled"]  else "`Disabled`"
-        rob_status    = "`Enabled`" if config["rob_enabled"]   else "`Disabled`"
+        notif_channel   = f"<#{config['notif_channel']}>" if config.get("notif_channel") else "`Not set`"
+        notif_role      = f"<@&{config['notif_role']}>"   if config.get("notif_role")    else "`Not set`"
+        shop_status     = "`Open`"    if config["shop_enabled"]  else "`Closed`"
+        daily_status    = "`Enabled`" if config["daily_enabled"] else "`Disabled`"
+        work_status     = "`Enabled`" if config["work_enabled"]  else "`Disabled`"
+        rob_status      = "`Enabled`" if config["rob_enabled"]   else "`Disabled`"
+
+        seasons_left    = int(config.get("tea_ai_seasons_remaining", 0))
+        ai_status       = f"`✨ Active — {seasons_left} season(s) left`" if seasons_left > 0 else "`Not purchased`"
+        cashback_status = "`💰 Active`" if config.get("cashback_enabled") else "`Not purchased`"
 
         embed = Embeds.base(f"> `⚙️` *Denki config — **{guild.name}***")
-        embed.add_field(name="`📢` Notif channel", value=notif_channel, inline=True)
-        embed.add_field(name="`🔔` Notif role",    value=notif_role,    inline=True)
-        embed.add_field(name="`🏪` Shop",          value=shop_status,   inline=True)
-        embed.add_field(name="`📅` Daily",         value=daily_status,  inline=True)
-        embed.add_field(name="`💼` Work",          value=work_status,   inline=True)
-        embed.add_field(name="`🦹` Rob",           value=rob_status,    inline=True)
-        embed.set_footer(text="Use /setnotifchannel, /setnofifrole, or /earnsettings to update.")
+        embed.add_field(name="`📢` Notif channel",   value=notif_channel,   inline=True)
+        embed.add_field(name="`🔔` Notif role",      value=notif_role,      inline=True)
+        embed.add_field(name="`🏪` Shop",            value=shop_status,     inline=True)
+        embed.add_field(name="`📅` Daily",           value=daily_status,    inline=True)
+        embed.add_field(name="`💼` Work",            value=work_status,     inline=True)
+        embed.add_field(name="`🦹` Rob",             value=rob_status,      inline=True)
+        embed.add_field(name="`🤖` Tea AI",          value=ai_status,       inline=True)
+        embed.add_field(name="`💰` Weekly Cashback", value=cashback_status, inline=True)
+        embed.set_footer(text="Use /setnotifchannel, /setnofifrole, /earnsettings to update  •  Buy upgrades in /shop")
 
         view = ConfigView(guild_id=guild.id, config=config)
         if is_slash:
@@ -205,7 +211,6 @@ class Admin(commands.Cog):
             wallet_snap=wallet_snap,
         )
 
-        # DM the bot owner
         if self.bot.owner_id:
             try:
                 owner = await self.bot.fetch_user(self.bot.owner_id)
@@ -285,8 +290,7 @@ class EarnSettingsView(discord.ui.View):
         select: discord.ui.Select,
     ) -> None:
         disabled = select.values
-
-        updates = {
+        updates  = {
             "daily_enabled": "daily" not in disabled,
             "work_enabled":  "work"  not in disabled,
             "rob_enabled":   "rob"   not in disabled,
@@ -323,11 +327,10 @@ class EarnSettingsView(discord.ui.View):
         self.stop()
 
 
-
 async def _defer(ctx_or_interaction: Any, is_slash: bool, ephemeral: bool = False) -> None:
-    """Defer a slash interaction immediately to extend the 3-second response window."""
     if is_slash and not ctx_or_interaction.response.is_done():
         await ctx_or_interaction.response.defer(ephemeral=ephemeral)
+
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Admin(bot))

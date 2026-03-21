@@ -54,14 +54,14 @@ class UserID(commands.Converter[int]):
 class Amount(commands.Converter[int]):
     """Accepts integers, comma-formatted numbers, decimals, and k/m shorthands."""
     async def convert(self, ctx: commands.Context[Any], argument: str) -> int:
-        cleaned = argument.strip().replace(",", "").replace("_", "")
+        cleaned    = argument.strip().replace(",", "").replace("_", "")
         multiplier = 1
         if cleaned.lower().endswith("k"):
             multiplier = 1_000
-            cleaned = cleaned[:-1]
+            cleaned    = cleaned[:-1]
         elif cleaned.lower().endswith("m"):
             multiplier = 1_000_000
-            cleaned = cleaned[:-1]
+            cleaned    = cleaned[:-1]
         try:
             value = round(float(cleaned) * multiplier)
             if value == 0:
@@ -110,7 +110,7 @@ def _build_table_pages(table: str, rows: list[Any], rows_per_page: int = 5) -> l
 class TablePaginatorView(PaginatorView):
     def __init__(self, table: str, rows: list[Any], owner_id: int) -> None:
         self.table = table
-        self.msg: discord.Message | None = None
+        self.msg:  discord.Message | None = None
         super().__init__(pages=_build_table_pages(table, rows), owner_id=owner_id)
 
     async def _rebuild_pages(self) -> list[discord.Embed]:
@@ -180,6 +180,11 @@ class Sudo(commands.Cog):
         embed.add_field(name="`🗄️` Data", value=(
             "> `!d data` — table row counts\n"
             "> `!d data <table>` — paginated table rows"
+        ), inline=False)
+        embed.add_field(name="`📋` Logging", value=(
+            "> `!d setlog <#channel>` — set the log channel\n"
+            "> `!d logchannel` — show current log channel\n"
+            "> `!d logtest` — send a test message to the log channel"
         ), inline=False)
         embed.set_footer(text="Prefix: !d  ·  Owner only")
         await _respond(ctx, embed)
@@ -426,7 +431,7 @@ class Sudo(commands.Cog):
         skipped = 0
 
         for raw_config in configs:
-            config = cast(dict[str, Any], raw_config)
+            config        = cast(dict[str, Any], raw_config)
             notif_channel = config.get("notif_channel")
             notif_role    = config.get("notif_role")
             if not notif_channel:
@@ -585,16 +590,11 @@ class Sudo(commands.Cog):
             await ctx.reply(embed=Embeds.info("Restart cancelled."))
             return
         await ctx.reply(embed=Embeds.success("Restarting..."))
-        try:
-            from main import _send_log
-            await _send_log(
-                "🔁 Bot Restarting",
-                f"> Restart triggered by **{ctx.author}** (`{ctx.author.id}`).\n"
-                f"> Process will restart momentarily.",
-                0xFEE75C,
-            )
-        except Exception:
-            pass
+
+        # Notify log channel before process is replaced
+        if hasattr(self.bot, "log"):
+            await self.bot.log.restart(str(ctx.author))  # type: ignore[attr-defined]
+
         import os
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
@@ -640,6 +640,7 @@ class Sudo(commands.Cog):
             "users", "banks", "guilds", "guildconfig",
             "seasons", "cooldowns", "transactions",
             "shopitems", "inventory", "reports", "warns", "bans",
+            "cashback",
         ]
 
         # No table arg — show row counts for all tables
@@ -674,9 +675,10 @@ class Sudo(commands.Cog):
         except Exception as e:
             return await _respond(ctx, Embeds.error(f"Query failed: {e}"))
 
-        pages     = _build_table_pages(table, rows)
-        view      = TablePaginatorView(table=table, rows=rows, owner_id=ctx.author.id)
-        view.msg  = await ctx.reply(embed=pages[0], view=view)
+        pages    = _build_table_pages(table, rows)
+        view     = TablePaginatorView(table=table, rows=rows, owner_id=ctx.author.id)
+        view.msg = await ctx.reply(embed=pages[0], view=view)
+
 
 # ── Confirm View ──────────────────────────────────────────────────────────────
 
