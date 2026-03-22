@@ -1121,6 +1121,25 @@ async def open_server_shop(guild_id: int, season_id: int) -> dict[str, Any]:
         raise
 
 
+
+
+# ── Arcade stats ──────────────────────────────────────────────────────────────
+
+async def get_arcade_stats(user_id: int) -> list[dict[str, Any]]:
+    """Return all arcade_stats rows for a user, one per game type."""
+    try:
+        res = (
+            supabase.table("arcade_stats")
+            .select("*")
+            .eq("user_id", user_id)
+            .order("game")
+            .execute()
+        )
+        return _rows(res.data)
+    except Exception as e:
+        logger.error(f"get_arcade_stats({user_id}): {e}")
+        raise
+
 # ── top.gg ────────────────────────────────────────────────────────────────────
 
 async def check_topgg_vote(user_id: int, bot_id: int, topgg_token: str) -> dict:

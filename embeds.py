@@ -3,11 +3,14 @@ from __future__ import annotations
 import math
 import traceback
 from datetime import datetime, timezone
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import discord
 
 import db
+
+if TYPE_CHECKING:
+    from cogs.arcade import ArcadeChallenge, TicTacToeView
 
 DEFAULT_COLOR  = 0xCD7F32
 _cached_color: int = DEFAULT_COLOR
@@ -63,6 +66,9 @@ def _next_milestone(streak: int) -> str:
     if streak < 30:
         return f"`{30 - streak}` more vote(s) for a **2x bonus**"
     return "You're at the max streak bonus! 🎉"
+
+
+RPS_EMOJI = {"rock": "🪨", "scissors": "✂️", "paper": "📄"}
 
 
 class Embeds:
@@ -623,7 +629,7 @@ class Embeds:
                 "> `ℹ️` *Use `/help [command]` to look up a specific command.*\n\n"
                 "> **Modules**\n"
                 "> `economy`  `gambling`  `investing`  `season`\n"
-                "> `shop`  `leaderboard`  `admin`  `tea`"
+                "> `shop`  `leaderboard`  `admin`  `tea`  `arcade`"
             ),
             color=get_color(),
         )
@@ -676,6 +682,297 @@ class Embeds:
         if notes:
             embed.add_field(name="`ℹ️` Notes", value=f"> *{notes}*", inline=False)
         embed.set_footer(text="<required>  [optional]  ·  Prefix: !d  ·  Slash: /")
+        return embed
+
+    # ── Arcade ────────────────────────────────────────────────────────────────
+
+    # ── Challenge flow ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def arcade_challenge(challenge: "ArcadeChallenge") -> discord.Embed:
+        return discord.Embed(
+            description=(
+                f"> `{challenge.game_emoji}` **{challenge.game_name}**\n\n"
+                f"> {challenge.challenger.mention} challenges {challenge.opponent.mention}!\n"
+                f"> *{challenge.game_desc}*\n\n"
+                f"> Bet: `¥{challenge.bet:,}` each  ·  Winner takes `¥{challenge.bet * 2:,}`"
+            ),
+            color=get_color(),
+        )
+
+    @staticmethod
+    def arcade_challenge_accepted(challenge: "ArcadeChallenge") -> discord.Embed:
+        return discord.Embed(
+            description=(
+                f"> `✅` *{challenge.opponent.display_name} accepted!*\n"
+                f"> `{challenge.game_emoji}` **{challenge.game_name}** is starting…"
+            ),
+            color=get_color(),
+        )
+
+    @staticmethod
+    def arcade_challenge_declined(challenge: "ArcadeChallenge") -> discord.Embed:
+        return discord.Embed(
+            description=(
+                f"> `❗` *{challenge.opponent.display_name} declined the challenge.*\n"
+                f"> Bet of `¥{challenge.bet:,}` has been refunded to {challenge.challenger.mention}."
+            ),
+            color=get_color(),
+        )
+
+    @staticmethod
+    def arcade_challenge_expired(challenge: "ArcadeChallenge") -> discord.Embed:
+        return discord.Embed(
+            description=(
+                f"> `⏳` *Challenge expired — {challenge.opponent.display_name} didn't respond in time.*\n"
+                f"> Bet of `¥{challenge.bet:,}` refunded to {challenge.challenger.mention}."
+            ),
+            color=get_color(),
+        )
+
+    # ── Shared game embeds ────────────────────────────────────────────────────
+
+    @staticmethod
+    def arcade_game_start(challenge: "ArcadeChallenge", rules: str) -> discord.Embed:
+        embed = discord.Embed(
+            description=(
+                f"> `{challenge.game_emoji}` **{challenge.game_name}**\n"
+                f"> {challenge.challenger.mention}  vs  {challenge.opponent.mention}\n"
+                f"> Pot: `¥{challenge.bet * 2:,}`"
+            ),
+            color=get_color(),
+        )
+        embed.add_field(name="`📋` Rules", value=rules, inline=False)
+        return embed
+
+    @staticmethod
+    def arcade_game_over(
+        winner: discord.Member,
+        bet: int,
+        scores: dict[int, int],
+        p1: discord.Member,
+        p2: discord.Member,
+    ) -> discord.Embed:
+        loser = p2 if winner.id == p1.id else p1
+        embed = discord.Embed(
+            description=f"> `🏆` *{winner.display_name} wins!*",
+            color=get_color(),
+        )
+        embed.add_field(
+            name="`📊` Score",
+            value=f"```{p1.display_name}: {scores[p1.id]}  ·  {p2.display_name}: {scores[p2.id]}```",
+            inline=False,
+        )
+        embed.add_field(name="`💰` Prize",   value=f"```¥{bet * 2:,}```",        inline=True)
+        embed.add_field(name="`💸` Paid by", value=f"```{loser.display_name}```", inline=True)
+        return embed
+
+    @staticmethod
+    def arcade_tie(challenge: "ArcadeChallenge") -> discord.Embed:
+        return discord.Embed(
+            description=(
+                f"> `🤝` *It's a tie!*\n"
+                f"> Both players get their `¥{challenge.bet:,}` back."
+            ),
+            color=get_color(),
+        )
+
+    @staticmethod
+    def arcade_timeout(player: discord.Member) -> discord.Embed:
+        return discord.Embed(
+            description=f"> `⏳` *{player.display_name} took too long — round forfeited.*",
+            color=get_color(),
+        )
+
+    @staticmethod
+    def arcade_round_result(
+        winner: discord.Member | None,
+        answer: str,
+        timed_out: bool,
+    ) -> discord.Embed:
+        if timed_out:
+            desc = f"> `⏳` *Nobody answered in time!*  ·  Answer: `{answer}`"
+        elif winner:
+            desc = f"> `✅` **{winner.display_name}** got it!  ·  `{answer}`"
+        else:
+            desc = f"> `❗` *Nobody got it right.*  ·  Answer: `{answer}`"
+        return discord.Embed(description=desc, color=get_color())
+
+    # ── Math Duel ─────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def arcade_mathduel_round(
+        rnd: int,
+        total: int,
+        equation: str,
+        scores: dict[int, int],
+        p1: discord.Member,
+        p2: discord.Member,
+    ) -> discord.Embed:
+        embed = discord.Embed(
+            description=f"> `🧮` *Math Duel — Round {rnd}/{total}*",
+            color=get_color(),
+        )
+        embed.add_field(name="`❓` Equation", value=f"```{equation} = ?```", inline=False)
+        embed.add_field(
+            name="`📊` Score",
+            value=f"```{p1.display_name}: {scores[p1.id]}  ·  {p2.display_name}: {scores[p2.id]}```",
+            inline=False,
+        )
+        embed.set_footer(text="Type your answer — first correct answer wins the round!")
+        return embed
+
+    # ── Number Bomb ───────────────────────────────────────────────────────────
+
+    @staticmethod
+    def arcade_numberbomb_turn(
+        player: discord.Member,
+        available: list[int],
+        picked: set[int],
+    ) -> discord.Embed:
+        remaining = "  ".join(str(n) for n in available)
+        embed     = discord.Embed(
+            description=f"> `💣` *Number Bomb — {player.display_name}'s turn*",
+            color=get_color(),
+        )
+        embed.add_field(name="`🔢` Available", value=f"```{remaining}```", inline=False)
+        if picked:
+            embed.add_field(
+                name="`✅` Picked so far",
+                value=f"```{', '.join(str(n) for n in sorted(picked))}```",
+                inline=False,
+            )
+        embed.set_footer(text="Pick a number — don't hit the bomb!")
+        return embed
+
+    @staticmethod
+    def arcade_numberbomb_safe(player: discord.Member, chosen: int) -> discord.Embed:
+        return discord.Embed(
+            description=f"> `😌` *{player.display_name} picked `{chosen}` — safe!*",
+            color=get_color(),
+        )
+
+    @staticmethod
+    def arcade_numberbomb_explosion(
+        loser: discord.Member,
+        chosen: int,
+        winner: discord.Member,
+        bet: int,
+    ) -> discord.Embed:
+        embed = discord.Embed(
+            description=(
+                f"> `💥` **BOOM!** {loser.display_name} picked `{chosen}` — that was the bomb!\n\n"
+                f"> `🏆` *{winner.display_name} wins!*"
+            ),
+            color=get_color(),
+        )
+        embed.add_field(name="`💰` Prize", value=f"```¥{bet * 2:,}```", inline=True)
+        return embed
+
+    # ── RPS ───────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def arcade_rps_dm(player: discord.Member) -> discord.Embed:
+        return discord.Embed(
+            description=(
+                f"> `✂️` *Rock Paper Scissors*\n\n"
+                f"> {player.display_name}, pick your move!\n"
+                f"> *Your opponent won't see this until both picks are in.*"
+            ),
+            color=get_color(),
+        )
+
+    @staticmethod
+    def arcade_rps_round(
+        rnd: int,
+        total: int,
+        scores: dict[int, int],
+        p1: discord.Member,
+        p2: discord.Member,
+    ) -> discord.Embed:
+        embed = discord.Embed(
+            description=f"> `✂️` *Rock Paper Scissors — Round {rnd}/{total}*\n> Check your DMs to pick!",
+            color=get_color(),
+        )
+        embed.add_field(
+            name="`📊` Score",
+            value=f"```{p1.display_name}: {scores[p1.id]}  ·  {p2.display_name}: {scores[p2.id]}```",
+            inline=False,
+        )
+        return embed
+
+    @staticmethod
+    def arcade_rps_result(
+        p1: discord.Member,
+        c1: str,
+        p2: discord.Member,
+        c2: str,
+        winner: discord.Member | None,
+    ) -> discord.Embed:
+        result_str = "🤝 *Tie!*" if winner is None else f"`✅` **{winner.display_name} wins the round!**"
+        embed = discord.Embed(
+            description=f"> {result_str}",
+            color=get_color(),
+        )
+        embed.add_field(
+            name="`🎮` Picks",
+            value=f"```{p1.display_name}: {RPS_EMOJI.get(c1, c1)}  ·  {p2.display_name}: {RPS_EMOJI.get(c2, c2)}```",
+            inline=False,
+        )
+        return embed
+
+    # ── Tic Tac Toe ───────────────────────────────────────────────────────────
+
+    @staticmethod
+    def arcade_ttt_board(
+        view: "TicTacToeView",
+        result: str | None,
+        game_num: int = 1,
+        total_games: int = 3,
+    ) -> discord.Embed:
+        if result is None:
+            sym    = "❌" if view.current_symbol == "X" else "⭕"
+            status = f"`{sym}` *{view.current_player.display_name}'s turn*"
+        elif result == "draw":
+            status = "`🤝` *Draw!*"
+        elif result == "timeout":
+            status = f"`⏳` *{view.current_player.display_name} timed out!*"
+        else:
+            sym    = "❌" if result == "X" else "⭕"
+            gamer  = view.p1 if result == "X" else view.p2
+            status = f"`{sym}` **{gamer.display_name} wins this game!**"
+
+        embed = discord.Embed(
+            description=f"> `❌` *Tic Tac Toe — Game {game_num}/{total_games}*\n> {status}",
+            color=get_color(),
+        )
+        embed.add_field(
+            name="`👥` Players",
+            value=f"```{view.p1.display_name} ❌  ·  {view.p2.display_name} ⭕```",
+            inline=False,
+        )
+        return embed
+
+    # ── Reaction Race ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def arcade_reaction_waiting(
+        rnd: int,
+        total: int,
+        scores: dict[int, int],
+        p1: discord.Member,
+        p2: discord.Member,
+    ) -> discord.Embed:
+        embed = discord.Embed(
+            description=f"> `⚡` *Reaction Race — Round {rnd}/{total}*\n> Get ready…",
+            color=get_color(),
+        )
+        embed.add_field(
+            name="`📊` Score",
+            value=f"```{p1.display_name}: {scores[p1.id]}  ·  {p2.display_name}: {scores[p2.id]}```",
+            inline=False,
+        )
+        embed.set_footer(text="Click ⚡ CLICK! the instant it appears — watch for fake-outs!")
         return embed
 
 

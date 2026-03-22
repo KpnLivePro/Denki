@@ -62,6 +62,7 @@ COGS: list[str] = [
     "cogs.sudo",
     "cogs.notifications",
     "cogs.tea",
+    "cogs.arcade",
     "cogs.website_push",
 ]
 
