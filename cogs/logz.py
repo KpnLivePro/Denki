@@ -1,28 +1,33 @@
 """
 cogs/logz.py  —  Denki
-Discord log shipping via webhook (silent messages, no pings).
+Runtime log shipping to a Discord channel via webhook.
 
-Replaces the old channel-send-based DiscordLogger with a Musubi-style
-queue + webhook approach. All existing call sites (bot.log.info / .error /
-.cmd / .online / .offline / .restart / .cog_fail) continue to work unchanged.
+Aligned with Musubi's discordlog.py architecture.
 
-Deployment notes (Azure Container Apps):
-  - Stdout logs are captured by Azure automatically — we keep StreamHandler.
-  - Set LOG_CHANNEL_ID in your env (or hard-code below) to ship to Discord too.
-  - The webhook is created/cached automatically; no manual setup needed.
+Key design decisions (matching Musubi):
+  - Queue holds raw logging.LogRecord objects only — no mixed union types.
+  - Auto-shipping filter: ERROR+ from denki.* loggers only.
+    The console (Azure stdout) is for INFO — Discord channel is for errors.
+  - Named methods (online/offline/restart/cog_fail/cmd) emit hand-crafted
+    LogRecords into the queue, exactly like Musubi's startup notice.
+  - DiscordLogger is a thin facade over stdlib logging — no pre-built embeds,
+    no separate queue path.
+  - Webhook setup deferred to on_ready (guild cache not available in cog_load).
+  - All webhook messages use flag 4096 (SUPPRESS_NOTIFICATIONS = @silent).
 
-Architecture:
-  1. _DiscordQueueHandler  — thread-safe logging.Handler, puts records on an
-                              asyncio.Queue (never blocks the event loop).
-  2. DiscordLogger         — same public API as before (.info/.error/.cmd etc.)
-                              now writes structured LogRecords into the queue
-                              instead of channel.send() calls.
-  3. Logging cog           — owns the queue, the aiohttp session, and the
-                              background flush task. Sets up the webhook in
-                              on_ready (guild cache guaranteed populated).
+What gets shipped to Discord:
+  - ERROR and CRITICAL from any denki.* logger (automatic)
+  - Startup notice (online)
+  - Shutdown notice (offline)
+  - Restart notice
+  - Cog load failures
+  - Unhandled command / slash errors (via .cmd())
+  - Explicit .warn() / .info() calls from main.py (guild join/leave etc.)
 
-Silent messages: Discord flag 4096 (SUPPRESS_NOTIFICATIONS) is set on every
-webhook POST so nobody gets pinged.
+What stays console-only:
+  - INFO from db.py, cooldowns, routine operations
+  - discord.py gateway/http internals
+  - Everything below ERROR that isn't an explicit named call
 """
 
 from __future__ import annotations
@@ -32,7 +37,7 @@ import logging
 import os
 import traceback
 from datetime import datetime, timezone
-from typing import Any, Optional, cast
+from typing import Optional
 
 import aiohttp
 import discord
@@ -40,13 +45,12 @@ from discord.ext import commands
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-# Set LOG_CHANNEL_ID env var, or hard-code a fallback integer here.
 _raw_channel_id = os.environ.get("LOG_CHANNEL_ID", "0")
 LOG_CHANNEL_ID: int = int(_raw_channel_id) if _raw_channel_id.isdigit() else 0
 
-WEBHOOK_NAME    = "Denki Logs"
-MAX_QUEUE       = 500
-FLUSH_INTERVAL  = 2.0    # seconds between drain cycles
+WEBHOOK_NAME   = "Denki Logs"
+MAX_QUEUE      = 500
+FLUSH_INTERVAL = 2.0  # seconds between drain cycles
 
 logger = logging.getLogger("denki.logz")
 
@@ -64,12 +68,13 @@ def _level_color(level: int) -> int:
     if level >= logging.CRITICAL: return 0xFF0000
     if level >= logging.ERROR:    return 0xFF4444
     if level >= logging.WARNING:  return 0xFFAA00
-    return 0x5793F2   # Denki default blue
+    return 0x5793F2  # Denki blue
 
 
 # ── Embed builder ─────────────────────────────────────────────────────────────
 
 def _record_to_embed(record: logging.LogRecord) -> discord.Embed:
+    """Convert a stdlib LogRecord to a Discord embed — identical to Musubi."""
     icon  = _level_icon(record.levelno)
     color = _level_color(record.levelno)
     ts    = f"<t:{int(record.created)}:T>"
@@ -89,49 +94,39 @@ def _record_to_embed(record: logging.LogRecord) -> discord.Embed:
     )
 
 
-def _raw_embed(level: int, title: str, description: str, fields: Optional[dict[str, str]] = None) -> discord.Embed:
-    """Build a structured embed for DiscordLogger's named methods."""
-    color = _level_color(level)
-    icon  = _level_icon(level)
-    embed = discord.Embed(
-        title=f"{icon}  {title}",
-        description=description,
-        color=color,
-        timestamp=datetime.now(timezone.utc),
-    )
-    for name, value in (fields or {}).items():
-        embed.add_field(name=name, value=value[:512], inline=False)
-    return embed
-
-
 # ── Queue handler ─────────────────────────────────────────────────────────────
 
 class _DiscordQueueHandler(logging.Handler):
     """
-    Thread-safe logging.Handler — puts records onto an asyncio.Queue.
+    Thread-safe logging.Handler — puts LogRecords onto an asyncio.Queue.
     Never blocks; drops silently when the queue is full.
+    Identical pattern to Musubi's _DiscordQueueHandler.
     """
 
-    def __init__(self, queue: asyncio.Queue[Any]) -> None:
+    def __init__(self, queue: asyncio.Queue[logging.LogRecord]) -> None:
         super().__init__()
         self._queue = queue
 
     def emit(self, record: logging.LogRecord) -> None:
-        # Guard: never log ourselves (infinite recursion)
         if record.name.startswith("denki.logz"):
-            return
+            return  # infinite recursion guard
         try:
             self._queue.put_nowait(record)
         except asyncio.QueueFull:
             pass
 
 
-# ── DiscordLogger — same public API as before ─────────────────────────────────
+# ── DiscordLogger ─────────────────────────────────────────────────────────────
 
 class DiscordLogger:
     """
-    Drop-in replacement for the old DiscordLogger.
-    All existing call sites work unchanged:
+    Thin facade used by existing call sites (bot.log.error / .cmd / etc.).
+
+    All methods now emit stdlib LogRecords into the shared queue — same
+    pattern as Musubi's startup notice — rather than pushing pre-built
+    embed dicts through a separate queue path.
+
+    Existing call sites in main.py and other cogs are unchanged:
         await bot.log.info("Title", "description")
         await bot.log.error("Title", "description", exc=e)
         await bot.log.cmd(ctx_or_interaction, error)
@@ -139,49 +134,56 @@ class DiscordLogger:
         await bot.log.offline()
         await bot.log.restart(triggered_by)
         await bot.log.cog_fail(cog_name, exc)
-
-    Internally each call enqueues a pre-built embed dict that the
-    flush loop ships via webhook.
+        await bot.log.warn("Title", "description")
     """
 
-    def __init__(self, queue: asyncio.Queue[Any]) -> None:
-        self._queue: asyncio.Queue[Any] = queue
+    def __init__(self, queue: asyncio.Queue[logging.LogRecord]) -> None:
+        self._queue = queue
 
-    def _enqueue(self, embed: discord.Embed) -> None:
-        # We ship pre-built embeds as dicts to avoid pickling discord objects
+    def _push(self, level: int, msg: str) -> None:
+        """Emit a hand-crafted LogRecord directly onto the queue."""
+        record = logging.LogRecord(
+            name     = "denki.main",
+            level    = level,
+            pathname = "",
+            lineno   = 0,
+            msg      = msg,
+            args     = (),
+            exc_info = None,
+        )
         try:
-            self._queue.put_nowait(("embed", embed.to_dict()))
+            self._queue.put_nowait(record)
         except asyncio.QueueFull:
             pass
 
-    # ── Named log methods ─────────────────────────────────────────────────────
+    # ── Named methods ─────────────────────────────────────────────────────────
 
-    async def error(
-        self,
-        title: str,
-        description: str,
-        context: str = "",
-        exc: Optional[BaseException] = None,
-    ) -> None:
-        fields: dict[str, str] = {}
-        if context:
-            fields["Context"] = f"```\n{context[:400]}\n```"
-        if exc:
-            tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-            fields["Traceback"] = f"```py\n{tb[:800]}\n```"
-        self._enqueue(_raw_embed(logging.ERROR, title, description, fields))
+    async def online(self, guild_count: int, command_count: int) -> None:
+        self._push(logging.INFO, (
+            f"🟢 **Denki Online**\n"
+            f"> `{guild_count}` guilds · `{command_count}` commands\n"
+            f"> Environment: **Azure Container Apps**"
+        ))
 
-    async def warn(self, title: str, description: str, context: str = "") -> None:
-        fields = {"Context": f"```\n{context[:400]}\n```"} if context else {}
-        self._enqueue(_raw_embed(logging.WARNING, title, description, fields))
+    async def offline(self) -> None:
+        self._push(logging.WARNING, "🔴 **Denki shutting down.**")
 
-    async def info(self, title: str, description: str, context: str = "") -> None:
-        fields = {"Context": f"```\n{context[:400]}\n```"} if context else {}
-        self._enqueue(_raw_embed(logging.INFO, title, description, fields))
+    async def restart(self, triggered_by: str) -> None:
+        self._push(logging.WARNING, (
+            f"🔁 **Denki Restarting**\n"
+            f"> Triggered by **{triggered_by}**"
+        ))
+
+    async def cog_fail(self, cog_name: str, exc: BaseException) -> None:
+        tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        self._push(logging.ERROR, (
+            f"❌ **Cog Load Failed — `{cog_name}`**\n"
+            f"```py\n{tb[:1500]}\n```"
+        ))
 
     async def cmd(
         self,
-        ctx_or_interaction: Any,
+        ctx_or_interaction,
         error: BaseException,
         note: str = "",
     ) -> None:
@@ -196,71 +198,60 @@ class DiscordLogger:
             guild   = ctx_or_interaction.guild
             cmd_str = (
                 f"!d {ctx_or_interaction.command}"
-                if ctx_or_interaction.command
-                else "!d unknown"
+                if ctx_or_interaction.command else "!d unknown"
             )
 
-        ctx_str = (
+        ctx_info = (
             f"Command : {cmd_str}\n"
             f"Author  : {author} ({author.id})\n"
             f"Guild   : {guild} ({guild.id if guild else 'DM'})"
         )
         if note:
-            ctx_str += f"\nNote    : {note}"
+            ctx_info += f"\nNote    : {note}"
 
         tb = "".join(traceback.format_exception(type(error), error, error.__traceback__))
-        fields = {
-            "Context":   f"```\n{ctx_str}\n```",
-            "Traceback": f"```py\n{tb[:800]}\n```",
-        }
-        self._enqueue(_raw_embed(
-            logging.ERROR,
-            f"Command Error — `{cmd_str}`",
-            str(error),
-            fields,
+        self._push(logging.ERROR, (
+            f"❌ **Command Error — `{cmd_str}`**\n"
+            f"```\n{ctx_info}\n```\n"
+            f"```py\n{tb[:1200]}\n```"
         ))
 
-    async def online(self, guild_count: int, command_count: int) -> None:
-        self._enqueue(_raw_embed(
-            logging.INFO,
-            "🟢  Bot Online",
-            (
-                f"> Guilds: `{guild_count}`\n"
-                f"> Commands synced: `{command_count}`\n"
-                f"> Environment: Azure Container Apps"
-            ),
-        ))
+    async def error(
+        self,
+        title: str,
+        description: str,
+        context: str = "",
+        exc: Optional[BaseException] = None,
+    ) -> None:
+        parts = [f"**{title}**", description]
+        if context:
+            parts.append(f"```\n{context[:400]}\n```")
+        if exc:
+            tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            parts.append(f"```py\n{tb[:800]}\n```")
+        self._push(logging.ERROR, "\n".join(parts))
 
-    async def offline(self) -> None:
-        self._enqueue(_raw_embed(
-            logging.WARNING,
-            "🔴  Bot Offline",
-            "> Shutting down gracefully.",
-        ))
+    async def warn(self, title: str, description: str, context: str = "") -> None:
+        parts = [f"**{title}**", description]
+        if context:
+            parts.append(f"```\n{context[:400]}\n```")
+        self._push(logging.WARNING, "\n".join(parts))
 
-    async def restart(self, triggered_by: str) -> None:
-        self._enqueue(_raw_embed(
-            logging.WARNING,
-            "🔁  Bot Restarting",
-            f"> Triggered by **{triggered_by}**\n> Process will restart momentarily.",
-        ))
-
-    async def cog_fail(self, cog_name: str, exc: BaseException) -> None:
-        tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-        self._enqueue(_raw_embed(
-            logging.ERROR,
-            f"Cog Load Failed — `{cog_name}`",
-            str(exc),
-            {"Traceback": f"```py\n{tb[:800]}\n```"},
-        ))
+    async def info(self, title: str, description: str, context: str = "") -> None:
+        # INFO from named methods always ships — used for intentional notices
+        # (guild join, guild leave) not routine DB/cooldown chatter.
+        parts = [f"**{title}**", description]
+        if context:
+            parts.append(f"```\n{context[:400]}\n```")
+        self._push(logging.INFO, "\n".join(parts))
 
 
 # ── Typed bot subclass ────────────────────────────────────────────────────────
 
 class DenkiBot(commands.Bot):
     """
-    Thin subclass of commands.Bot that declares the `log` attribute so the
-    type checker knows it exists. The Logging cog assigns it in __init__.
+    Declares the `log` attribute so the type checker knows it exists.
+    Import and use this as the bot type in main.py.
     """
     log: DiscordLogger
 
@@ -268,30 +259,19 @@ class DenkiBot(commands.Bot):
 # ── Logging Cog ───────────────────────────────────────────────────────────────
 
 class Logging(commands.Cog):
-    """
-    Webhook-based Discord log shipping for Denki.
-
-    - Installs a queue handler on the root 'denki' logger immediately
-      so no records are lost during startup.
-    - Defers webhook creation to on_ready (guild cache populated).
-    - Flushes the queue every FLUSH_INTERVAL seconds.
-    - All messages are sent @silent (flag 4096) — no pings.
-    """
 
     def __init__(self, bot: DenkiBot) -> None:
         self.bot: DenkiBot = bot
 
-        # Shared queue — both the queue handler (stdlib records) and
-        # DiscordLogger (pre-built embed dicts) push onto this.
-        self._queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=MAX_QUEUE)
+        self._queue: asyncio.Queue[logging.LogRecord] = asyncio.Queue(maxsize=MAX_QUEUE)
 
-        # Attach bot.log (DiscordLogger) — declared on DenkiBot so no ignore needed
+        # Attach bot.log — declared on DenkiBot so type checker is happy
         bot.log = DiscordLogger(self._queue)
 
-        self._webhook_url: Optional[str] = None
-        self._session: Optional[aiohttp.ClientSession] = None
-        self._handler = _DiscordQueueHandler(self._queue)
-        self._task: Optional[asyncio.Task[None]] = None
+        self._webhook_url: Optional[str]               = None
+        self._session:     Optional[aiohttp.ClientSession] = None
+        self._handler      = _DiscordQueueHandler(self._queue)
+        self._task:        Optional[asyncio.Task[None]]  = None
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -310,7 +290,6 @@ class Logging(commands.Cog):
                 await self._task
             except asyncio.CancelledError:
                 pass
-        # Final drain before unload
         await self._drain()
         if self._session and not self._session.closed:
             await self._session.close()
@@ -318,10 +297,12 @@ class Logging(commands.Cog):
     # ── Handler installation ──────────────────────────────────────────────────
 
     def _install_handler(self) -> None:
-        self._handler.setLevel(logging.INFO)
-        # Only ship denki.* loggers — keeps discord.py internals out of the channel
+        self._handler.setLevel(logging.ERROR)
+        # Auto-ship ERROR+ from denki.* only.
+        # Named method calls (_push) bypass this — they put records directly
+        # onto the queue and can use any level (INFO for online notice, etc.)
         self._handler.addFilter(
-            lambda r: r.name.startswith("denki") and r.levelno >= logging.INFO
+            lambda r: r.name.startswith("denki") and r.levelno >= logging.ERROR
         )
         logging.getLogger("denki").addHandler(self._handler)
 
@@ -331,10 +312,7 @@ class Logging(commands.Cog):
     # ── Webhook setup ─────────────────────────────────────────────────────────
 
     async def _ensure_webhook(self) -> bool:
-        """
-        Find or create the Denki Logs webhook.
-        Must only be called from on_ready — guild cache must be populated.
-        """
+        """Deferred to on_ready so guild cache is populated."""
         if self._webhook_url:
             return True
 
@@ -353,8 +331,7 @@ class Logging(commands.Cog):
                 pass
         if not isinstance(channel, discord.TextChannel):
             logger.error(
-                "Logz: channel %d not found — bot may not be in that server "
-                "or lacks access. Check LOG_CHANNEL_ID.",
+                "Logz: channel %d not found — check LOG_CHANNEL_ID and bot permissions.",
                 LOG_CHANNEL_ID,
             )
             return False
@@ -377,8 +354,7 @@ class Logging(commands.Cog):
 
         except discord.Forbidden:
             logger.error(
-                "Logz: missing Manage Webhooks permission in channel %d. "
-                "Grant it to the bot and reload the cog.",
+                "Logz: missing Manage Webhooks permission in channel %d.",
                 LOG_CHANNEL_ID,
             )
             return False
@@ -386,7 +362,7 @@ class Logging(commands.Cog):
             logger.error("Logz: webhook setup failed — %s", e)
             return False
 
-    # ── Flush loop ────────────────────────────────────────────────────────────
+    # ── Flush loop (identical to Musubi) ──────────────────────────────────────
 
     async def _flush_loop(self) -> None:
         while True:
@@ -397,34 +373,28 @@ class Logging(commands.Cog):
         if not self._webhook_url:
             return
 
-        batch: list[dict[str, Any]] = []
-
+        batch: list[logging.LogRecord] = []
         try:
             while True:
-                item = self._queue.get_nowait()
-
-                if isinstance(item, tuple) and item[0] == "embed":
-                    # Pre-built embed dict from DiscordLogger
-                    batch.append(item[1])
-                elif isinstance(item, logging.LogRecord):
-                    # Raw stdlib record — convert to embed dict
-                    batch.append(cast(dict[str, Any], _record_to_embed(item).to_dict()))
-
+                record = self._queue.get_nowait()
+                batch.append(record)
                 if len(batch) >= 10:
                     await self._ship(batch)
                     batch = []
-
         except asyncio.QueueEmpty:
             pass
 
         if batch:
             await self._ship(batch)
 
-    async def _ship(self, embed_dicts: list[dict[str, Any]]) -> None:
+    async def _ship(self, records: list[logging.LogRecord]) -> None:
+        """Convert records to embeds and POST — identical to Musubi._ship."""
         if not self._webhook_url or not self._session or self._session.closed:
             return
+
+        embeds  = [_record_to_embed(r) for r in records]
         payload = {
-            "embeds": embed_dicts,
+            "embeds": [e.to_dict() for e in embeds],
             "flags":  4096,  # SUPPRESS_NOTIFICATIONS — @silent
         }
         try:
@@ -443,40 +413,20 @@ class Logging(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
-        """
-        Earliest point where get_channel() is reliable.
-        Set up the webhook then flush anything that queued during startup.
-        """
         ok = await self._ensure_webhook()
         if not ok:
             return
-
-        # Startup notice — sent as a DiscordLogger embed
         assert self.bot.user is not None
-        guild_count   = len(self.bot.guilds)
-        command_count = len(self.bot.tree.get_commands())
-
-        self.bot.log._enqueue(_raw_embed(
-            logging.INFO,
-            "🟢  Denki Online",
-            (
-                f"> `{self.bot.user}` · `{guild_count}` guilds\n"
-                f"> Commands: `{command_count}`\n"
-                f"> Environment: **Azure Container Apps**\n"
-                f"> Channel: <#{LOG_CHANNEL_ID}>"
-            ),
-        ))
-
-        # Flush immediately — don't wait for the 2s loop
+        await self.bot.log.online(
+            guild_count   = len(self.bot.guilds),
+            command_count = len(self.bot.tree.get_commands()),
+        )
         await self._drain()
-
-    # ── Error hooks ───────────────────────────────────────────────────────────
 
     @commands.Cog.listener()
     async def on_command_error(
         self, ctx: commands.Context, error: commands.CommandError
     ) -> None:
-        """Forward unhandled prefix errors to the log channel."""
         ignored = (
             commands.CommandNotFound,
             commands.NotOwner,
@@ -496,7 +446,6 @@ class Logging(commands.Cog):
         interaction: discord.Interaction,
         error: discord.app_commands.AppCommandError,
     ) -> None:
-        """Forward unhandled slash errors to the log channel."""
         ignored = (
             discord.app_commands.MissingPermissions,
             discord.app_commands.CheckFailure,
@@ -517,74 +466,64 @@ class Logging(commands.Cog):
         except Exception:
             pass
 
-    # ── Sudo commands ─────────────────────────────────────────────────────────
+    # ── Owner commands ────────────────────────────────────────────────────────
 
     @commands.command(name="setlog")
-    async def setlog(
-        self, ctx: commands.Context, channel: discord.TextChannel
-    ) -> None:
+    async def setlog(self, ctx: commands.Context, channel: discord.TextChannel) -> None:
         """Set the log channel at runtime. Owner only."""
         if not await self.bot.is_owner(ctx.author):
             return
-
         global LOG_CHANNEL_ID
-        LOG_CHANNEL_ID = channel.id
-        # Reset cached webhook URL so it's re-created in the new channel
+        LOG_CHANNEL_ID    = channel.id
         self._webhook_url = None
-
-        ok = await self._ensure_webhook()
-        status = "✅ Webhook created" if ok else "❌ Webhook setup failed — check permissions"
+        ok     = await self._ensure_webhook()
+        status = "✅ Webhook ready" if ok else "❌ Webhook setup failed — check permissions"
         await ctx.reply(embed=discord.Embed(
             description=(
                 f"> `✅` *Log channel set to {channel.mention}.*\n"
                 f"> {status}\n"
-                f"> Add `LOG_CHANNEL_ID={channel.id}` to your env to persist across restarts."
+                f"> Add `LOG_CHANNEL_ID={channel.id}` to your env to persist."
             ),
             color=0x5793F2,
         ))
 
     @commands.command(name="logtest")
     async def logtest(self, ctx: commands.Context) -> None:
-        """Send test records at every level. Owner only."""
+        """Fire test records at every level. Owner only."""
         if not await self.bot.is_owner(ctx.author):
             return
-
         if not self._webhook_url:
             await ctx.reply(embed=discord.Embed(
                 description=(
-                    f"> `❗` *Webhook not initialised.*\n"
-                    f"> Set `LOG_CHANNEL_ID` env var or use `!d setlog #channel`."
+                    "> `❗` *Webhook not initialised.*\n"
+                    "> Set `LOG_CHANNEL_ID` env var or use `!d setlog #channel`."
                 ),
                 color=0xFF4444,
             ))
             return
-
-        test_logger = logging.getLogger("denki.logtest")
-        test_logger.info("logtest INFO — handler is working ✅")
-        test_logger.warning("logtest WARNING — test warning ⚠️")
-        test_logger.error("logtest ERROR — test error ❌")
-
+        test_log = logging.getLogger("denki.logtest")
+        test_log.warning("logtest WARNING — test warning ⚠️")
+        test_log.error("logtest ERROR — test error ❌")
+        test_log.critical("logtest CRITICAL — test critical ‼️")
         await ctx.reply(embed=discord.Embed(
             description=(
                 f"> `✅` *3 test records queued for <#{LOG_CHANNEL_ID}>.*\n"
-                f"> INFO · WARNING · ERROR"
+                f"> WARNING · ERROR · CRITICAL"
             ),
             color=0x5793F2,
         ))
 
     @commands.command(name="logchannel")
     async def logchannel(self, ctx: commands.Context) -> None:
-        """Show the current log channel and webhook status. Owner only."""
+        """Show current log channel and webhook status. Owner only."""
         if not await self.bot.is_owner(ctx.author):
             return
-
         if LOG_CHANNEL_ID and self._webhook_url:
             desc = f"> `📋` *Log channel: <#{LOG_CHANNEL_ID}>*\n> Webhook: ✅ active"
         elif LOG_CHANNEL_ID:
             desc = f"> `⚠️` *Channel ID `{LOG_CHANNEL_ID}` set but webhook not initialised.*"
         else:
             desc = "> `❗` *No log channel set. Use `!d setlog #channel`.*"
-
         await ctx.reply(embed=discord.Embed(description=desc, color=0x5793F2))
 
 

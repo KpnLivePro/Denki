@@ -12,6 +12,7 @@ from discord.ext import commands
 
 import db
 import embeds as embeds_module
+from cogs.logz import DenkiBot
 from embeds import Embeds
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -49,7 +50,7 @@ if not TOPGG_TOKEN:
 # ── Cogs ──────────────────────────────────────────────────────────────────────
 
 COGS: list[str] = [
-    "cogs.logz",      # must be first — attaches bot.logz before other cogs need it
+    "cogs.logz",      # must be first — attaches bot.log before other cogs need it
     "cogs.help",
     "cogs.init",
     "cogs.economy",
@@ -72,7 +73,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members         = True
 
-bot = commands.Bot(
+bot = DenkiBot(
     command_prefix=PREFIX,
     intents=intents,
     owner_id=OWNER_ID,
@@ -142,9 +143,8 @@ async def on_ready() -> None:
     logger.info("denki.startup topgg_configured=%s", bool(TOPGG_TOKEN))
     logger.info("denki.startup status=ready")
 
-    # Send online notification via bot.logz if available
-    if hasattr(bot, "log"):
-        await bot.logz.online(len(bot.guilds), synced_count)  # type: ignore[attr-defined]
+    # NOTE: bot.log.online() is called by cogs/logz.py on_ready — not here.
+    # Calling it here too would send a duplicate startup notice.
 
 
 @bot.event
@@ -168,7 +168,7 @@ async def on_guild_join(guild: discord.Guild) -> None:
         guild.id, guild.name, guild.member_count or 0,
     )
     if hasattr(bot, "log"):
-        await bot.logz.info(  # type: ignore[attr-defined]
+        await bot.log.info(
             "Guild Joined",
             f"> **{guild.name}** (`{guild.id}`)\n> Members: `{guild.member_count or 0}`",
         )
@@ -178,7 +178,7 @@ async def on_guild_join(guild: discord.Guild) -> None:
 async def on_guild_remove(guild: discord.Guild) -> None:
     logger.info("denki.guild action=leave id=%d name=%r", guild.id, guild.name)
     if hasattr(bot, "log"):
-        await bot.logz.warn(  # type: ignore[attr-defined]
+        await bot.log.warn(
             "Guild Left",
             f"> **{guild.name}** (`{guild.id}`)",
         )
@@ -200,6 +200,10 @@ async def on_guild_update(before: discord.Guild, after: discord.Guild) -> None:
 @bot.event
 async def on_member_join(member: discord.Member) -> None:
     guild = member.guild
+    # Only act on guilds already registered — avoids touching unregistered guilds
+    guild_data = await db.get_guild(guild.id)
+    if not guild_data:
+        return
     if guild.member_count and guild.member_count >= 250:
         await db.set_guild_global(guild.id, True)
         logger.info(
@@ -211,6 +215,11 @@ async def on_member_join(member: discord.Member) -> None:
 @bot.event
 async def on_member_remove(member: discord.Member) -> None:
     guild = member.guild
+    # Guard: only act on registered guilds — prevents the IndexError crash
+    # that occurs when set_guild_global UPDATE matches no row.
+    guild_data = await db.get_guild(guild.id)
+    if not guild_data:
+        return
     if guild.member_count and guild.member_count < 250:
         await db.set_guild_global(guild.id, False)
         logger.info(
@@ -221,7 +230,7 @@ async def on_member_remove(member: discord.Member) -> None:
 
 @bot.event
 async def on_command_error(ctx: commands.Context[Any], error: commands.CommandError) -> None:
-    # Gracefully handled errors — just reply, don't log to channel
+    # Gracefully handled errors — reply only, don't ship to Discord log
     if isinstance(error, commands.CommandNotFound):
         return
     if isinstance(error, commands.NotOwner):
@@ -239,9 +248,8 @@ async def on_command_error(ctx: commands.Context[Any], error: commands.CommandEr
     if isinstance(error, commands.CheckFailure):
         return
 
-    # Unexpected error — log to channel and reply to user
-    # cogs/logging.py on_command_error also fires, but that skips these same
-    # ignored types so there's no double-logging
+    # Unexpected — log to console and reply to user.
+    # cogs/logz.py on_command_error also fires and ships to Discord.
     logger.error("denki.command error=%r command=%r", str(error), str(ctx.command), exc_info=error)
     await ctx.reply(embed=Embeds.error("Something went wrong. The error has been logged."))
 
@@ -253,7 +261,7 @@ async def on_error(event: str, *args: Any, **kwargs: Any) -> None:
         return
     logger.error("denki.event error event=%r", event, exc_info=True)
     if hasattr(bot, "log"):
-        await bot.logz.error(  # type: ignore[attr-defined]
+        await bot.log.error(
             f"Event Error — `{event}`",
             tb[:500],
             context=f"Event: {event}",
@@ -273,9 +281,8 @@ async def main() -> None:
                     "denki.cog action=failed name=%s error=%r",
                     cog, str(e), exc_info=e,
                 )
-                # Try to notify via log channel if logging cog already loaded
                 if hasattr(bot, "log"):
-                    await bot.logz.cog_fail(cog, e)  # type: ignore[attr-defined]
+                    await bot.log.cog_fail(cog, e)
 
         try:
             await bot.start(TOKEN)
@@ -283,7 +290,7 @@ async def main() -> None:
             pass
         finally:
             if hasattr(bot, "log"):
-                await bot.logz.offline()  # type: ignore[attr-defined]
+                await bot.log.offline()
 
 
 if __name__ == "__main__":

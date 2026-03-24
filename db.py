@@ -39,12 +39,21 @@ def _rows(data: Any) -> list[dict[str, Any]]:
     return [dict(r) for r in data]
 
 
+def _first(data: Any) -> Optional[dict[str, Any]]:
+    """
+    Safely return the first row from a Supabase response.
+    UPDATE/UPSERT returns [] when no row matched the WHERE clause —
+    using data[0] directly raises IndexError in that case.
+    """
+    return _row(data[0]) if data else None
+
+
 # ── Users ─────────────────────────────────────────────────────────────────────
 
 async def get_user(user_id: int) -> Optional[dict[str, Any]]:
     try:
         res = supabase.table("users").select("*").eq("user_id", user_id).execute()
-        return _row(res.data[0]) if res.data else None
+        return _first(res.data)
     except Exception as e:
         logger.error(f"get_user({user_id}): {e}")
         raise
@@ -78,7 +87,10 @@ async def update_wallet(user_id: int, amount: int) -> dict[str, Any]:
                 f"Insufficient funds. Wallet: ¥{user['wallet']:,} — tried to change by ¥{amount:,}."
             )
         res = supabase.table("users").update({"wallet": new_balance}).eq("user_id", user_id).execute()
-        return _row(res.data[0])
+        row = _first(res.data)
+        if row is None:
+            raise RuntimeError(f"update_wallet: no row returned for user {user_id}")
+        return row
     except ValueError:
         raise
     except Exception as e:
@@ -95,7 +107,7 @@ async def get_richest_user() -> Optional[dict[str, Any]]:
             .limit(1)
             .execute()
         )
-        return _row(res.data[0]) if res.data else None
+        return _first(res.data)
     except Exception as e:
         logger.error(f"get_richest_user(): {e}")
         raise
@@ -153,7 +165,7 @@ def calculate_streak_bonus(base: int, streak: int) -> int:
 async def get_guild(guild_id: int) -> Optional[dict[str, Any]]:
     try:
         res = supabase.table("guilds").select("*").eq("guild_id", guild_id).execute()
-        return _row(res.data[0]) if res.data else None
+        return _first(res.data)
     except Exception as e:
         logger.error(f"get_guild({guild_id}): {e}")
         raise
@@ -190,10 +202,14 @@ async def update_guild_meta(guild_id: int, name: str, icon_url: Optional[str]) -
         raise
 
 
-async def set_guild_global(guild_id: int, is_global: bool) -> dict[str, Any]:
+async def set_guild_global(guild_id: int, is_global: bool) -> Optional[dict[str, Any]]:
+    """
+    Returns None when the guild row doesn't exist yet (UPDATE matched nothing).
+    Callers in on_member_join/remove should check for None and skip if unregistered.
+    """
     try:
         res = supabase.table("guilds").update({"global": is_global}).eq("guild_id", guild_id).execute()
-        return _row(res.data[0])
+        return _first(res.data)
     except Exception as e:
         logger.error(f"set_guild_global({guild_id}, {is_global}): {e}")
         raise
@@ -209,7 +225,10 @@ async def increment_guild_wins(guild_id: int) -> dict[str, Any]:
             "tier": new_tier,
         }).eq("guild_id", guild_id).execute()
         logger.info(f"Guild {guild_id} wins: {new_wins}, tier: {new_tier}")
-        return _row(res.data[0])
+        row = _first(res.data)
+        if row is None:
+            raise RuntimeError(f"increment_guild_wins: no row returned for guild {guild_id}")
+        return row
     except Exception as e:
         logger.error(f"increment_guild_wins({guild_id}): {e}")
         raise
@@ -219,7 +238,10 @@ async def reset_guild_wins(guild_id: int) -> dict[str, Any]:
     try:
         res = supabase.table("guilds").update({"wins": 0, "tier": 1}).eq("guild_id", guild_id).execute()
         logger.info(f"Guild {guild_id} win streak reset")
-        return _row(res.data[0])
+        row = _first(res.data)
+        if row is None:
+            raise RuntimeError(f"reset_guild_wins: no row returned for guild {guild_id}")
+        return row
     except Exception as e:
         logger.error(f"reset_guild_wins({guild_id}): {e}")
         raise
@@ -238,7 +260,7 @@ def _calculate_tier(wins: int) -> int:
 async def get_guild_config(guild_id: int) -> Optional[dict[str, Any]]:
     try:
         res = supabase.table("guildconfig").select("*").eq("guild_id", guild_id).execute()
-        return _row(res.data[0]) if res.data else None
+        return _first(res.data)
     except Exception as e:
         logger.error(f"get_guild_config({guild_id}): {e}")
         raise
@@ -251,13 +273,13 @@ async def get_or_create_guild_config(guild_id: int) -> dict[str, Any]:
             return config
         await get_or_create_guild(guild_id)
         res = supabase.table("guildconfig").insert({
-            "guild_id":         guild_id,
-            "daily_enabled":    True,
-            "work_enabled":     True,
-            "rob_enabled":      True,
-            "notif_channel":    None,
-            "notif_role":       None,
-            "shop_enabled":     False,
+            "guild_id":                  guild_id,
+            "daily_enabled":             True,
+            "work_enabled":              True,
+            "rob_enabled":               True,
+            "notif_channel":             None,
+            "notif_role":                None,
+            "shop_enabled":              False,
             "tea_ai_enabled":            False,
             "tea_ai_seasons_remaining":  0,
             "tea_ai_purchased_season":   None,
@@ -282,7 +304,10 @@ async def update_guild_config(guild_id: int, updates: dict[str, Any]) -> dict[st
         if not any(earn_flags):
             raise ValueError("Cannot disable all three earning methods. At least one must remain active.")
         res = supabase.table("guildconfig").update(updates).eq("guild_id", guild_id).execute()
-        return _row(res.data[0])
+        row = _first(res.data)
+        if row is None:
+            raise RuntimeError(f"update_guild_config: no row returned for guild {guild_id}")
+        return row
     except ValueError:
         raise
     except Exception as e:
@@ -389,7 +414,7 @@ async def tick_tea_ai_seasons() -> list[int]:
 
 # ── Cashback ──────────────────────────────────────────────────────────────────
 
-CASHBACK_RATE      = 0.15   # 15%
+CASHBACK_RATE       = 0.15   # 15%
 CASHBACK_LOSS_TYPES = {
     "gamble_loss", "tea_loss", "greentea_loss",
 }
@@ -412,7 +437,6 @@ async def record_loss_for_cashback(user_id: int, guild_id: int, amount: int) -> 
     try:
         week_start = _current_week_start().isoformat()
 
-        # Upsert — increment total_lost if row exists, create if not
         existing = (
             supabase.table("cashback")
             .select("cashback_id, total_lost")
@@ -439,18 +463,10 @@ async def record_loss_for_cashback(user_id: int, guild_id: int, amount: int) -> 
 
 
 async def get_cashback_claim(user_id: int, guild_id: int) -> Optional[dict[str, Any]]:
-    """
-    Returns the claimable cashback row for this week if:
-    - It's Monday UTC
-    - The window is 12am–8am UTC
-    - The row hasn't been claimed yet
-    - paid_out is 0 (unclaimed)
-    """
     try:
         now        = datetime.now(timezone.utc)
         week_start = _current_week_start().isoformat()
 
-        # Must be Monday (weekday 0) between 00:00–08:00 UTC
         if now.weekday() != 0 or now.hour >= 8:
             return None
 
@@ -463,17 +479,13 @@ async def get_cashback_claim(user_id: int, guild_id: int) -> Optional[dict[str, 
             .is_("claimed_at", "null")
             .execute()
         )
-        return _row(res.data[0]) if res.data else None
+        return _first(res.data)
     except Exception as e:
         logger.error(f"get_cashback_claim({user_id}, {guild_id}): {e}")
         return None
 
 
 async def claim_cashback(user_id: int, guild_id: int) -> Optional[int]:
-    """
-    Pays out 15% of this week's losses to the user's wallet.
-    Returns the amount paid, or None if nothing to claim.
-    """
     try:
         row = await get_cashback_claim(user_id, guild_id)
         if not row:
@@ -501,10 +513,6 @@ async def claim_cashback(user_id: int, guild_id: int) -> Optional[int]:
 
 
 async def get_cashback_summary(user_id: int, guild_id: int) -> dict[str, Any]:
-    """
-    Returns a summary of the user's cashback status for the current week.
-    Used by /cashback to show the user what they have pending.
-    """
     try:
         now        = datetime.now(timezone.utc)
         week_start = _current_week_start().isoformat()
@@ -521,14 +529,14 @@ async def get_cashback_summary(user_id: int, guild_id: int) -> dict[str, Any]:
         if not res.data:
             return {"total_lost": 0, "paid_out": 0, "claimed": False, "claimable": False, "payout": 0}
 
-        row         = _row(res.data[0])
-        total_lost  = int(row["total_lost"])
-        paid_out    = int(row["paid_out"])
-        claimed     = row.get("claimed_at") is not None
-        is_monday   = now.weekday() == 0
-        in_window   = is_monday and now.hour < 8
-        claimable   = in_window and not claimed and total_lost > 0
-        payout      = max(1, int(total_lost * CASHBACK_RATE)) if total_lost > 0 else 0
+        row        = _row(res.data[0])
+        total_lost = int(row["total_lost"])
+        paid_out   = int(row["paid_out"])
+        claimed    = row.get("claimed_at") is not None
+        is_monday  = now.weekday() == 0
+        in_window  = is_monday and now.hour < 8
+        claimable  = in_window and not claimed and total_lost > 0
+        payout     = max(1, int(total_lost * CASHBACK_RATE)) if total_lost > 0 else 0
 
         return {
             "total_lost": total_lost,
@@ -548,7 +556,7 @@ async def get_cashback_summary(user_id: int, guild_id: int) -> dict[str, Any]:
 async def get_active_season() -> Optional[dict[str, Any]]:
     try:
         res = supabase.table("seasons").select("*").eq("active", True).limit(1).execute()
-        return _row(res.data[0]) if res.data else None
+        return _first(res.data)
     except Exception as e:
         logger.error(f"get_active_season(): {e}")
         raise
@@ -557,7 +565,7 @@ async def get_active_season() -> Optional[dict[str, Any]]:
 async def get_season(season_id: int) -> Optional[dict[str, Any]]:
     try:
         res = supabase.table("seasons").select("*").eq("season_id", season_id).execute()
-        return _row(res.data[0]) if res.data else None
+        return _first(res.data)
     except Exception as e:
         logger.error(f"get_season({season_id}): {e}")
         raise
@@ -582,7 +590,10 @@ async def close_season(season_id: int) -> dict[str, Any]:
     try:
         res = supabase.table("seasons").update({"active": False}).eq("season_id", season_id).execute()
         logger.info(f"Closed season {season_id}")
-        return _row(res.data[0])
+        row = _first(res.data)
+        if row is None:
+            raise RuntimeError(f"close_season: no row returned for season {season_id}")
+        return row
     except Exception as e:
         logger.error(f"close_season({season_id}): {e}")
         raise
@@ -591,7 +602,10 @@ async def close_season(season_id: int) -> dict[str, Any]:
 async def update_season(season_id: int, updates: dict[str, Any]) -> dict[str, Any]:
     try:
         res = supabase.table("seasons").update(updates).eq("season_id", season_id).execute()
-        return _row(res.data[0])
+        row = _first(res.data)
+        if row is None:
+            raise RuntimeError(f"update_season: no row returned for season {season_id}")
+        return row
     except Exception as e:
         logger.error(f"update_season({season_id}, {updates}): {e}")
         raise
@@ -609,7 +623,7 @@ async def get_bank(user_id: int, guild_id: int, season_id: int) -> Optional[dict
             .eq("season_id", season_id)
             .execute()
         )
-        return _row(res.data[0]) if res.data else None
+        return _first(res.data)
     except Exception as e:
         logger.error(f"get_bank({user_id}, {guild_id}, {season_id}): {e}")
         raise
@@ -644,7 +658,10 @@ async def update_bank_balance(user_id: int, guild_id: int, season_id: int, amoun
         if amount > 0:
             update_data["total_earned"] = int(bank["total_earned"]) + amount
         res = supabase.table("banks").update(update_data).eq("bank_id", bank["bank_id"]).execute()
-        return _row(res.data[0])
+        row = _first(res.data)
+        if row is None:
+            raise RuntimeError(f"update_bank_balance: no row returned for bank {bank['bank_id']}")
+        return row
     except ValueError:
         raise
     except Exception as e:
@@ -661,7 +678,10 @@ async def add_investment(user_id: int, guild_id: int, season_id: int, amount: in
             "total_earned": int(bank["total_earned"]) + amount,
         }).eq("bank_id", bank["bank_id"]).execute()
         logger.info(f"User {user_id} invested ¥{amount:,} in guild {guild_id} season {season_id}")
-        return _row(res.data[0])
+        row = _first(res.data)
+        if row is None:
+            raise RuntimeError(f"add_investment: no row returned for bank {bank['bank_id']}")
+        return row
     except ValueError:
         raise
     except Exception as e:
@@ -780,7 +800,7 @@ async def get_shop_items(guild_id: Optional[int] = None) -> list[dict[str, Any]]
 async def get_shop_item(item_id: int) -> Optional[dict[str, Any]]:
     try:
         res = supabase.table("shopitems").select("*").eq("item_id", item_id).execute()
-        return _row(res.data[0]) if res.data else None
+        return _first(res.data)
     except Exception as e:
         logger.error(f"get_shop_item({item_id}): {e}")
         raise
@@ -813,11 +833,11 @@ async def create_shop_item(
         raise
 
 
-async def disable_shop_item(item_id: int) -> dict[str, Any]:
+async def disable_shop_item(item_id: int) -> Optional[dict[str, Any]]:
     try:
         res = supabase.table("shopitems").update({"active": False}).eq("item_id", item_id).execute()
         logger.info(f"Disabled shop item {item_id}")
-        return _row(res.data[0])
+        return _first(res.data)
     except Exception as e:
         logger.error(f"disable_shop_item({item_id}): {e}")
         raise
@@ -898,10 +918,10 @@ async def get_reports(
         raise
 
 
-async def update_report_status(report_id: int, status: str) -> dict[str, Any]:
+async def update_report_status(report_id: int, status: str) -> Optional[dict[str, Any]]:
     try:
         res = supabase.table("reports").update({"status": status}).eq("report_id", report_id).execute()
-        return _row(res.data[0])
+        return _first(res.data)
     except Exception as e:
         logger.error(f"update_report_status({report_id}, {status}): {e}")
         raise
@@ -945,11 +965,11 @@ async def count_active_warns(user_id: int) -> int:
     return len(await get_active_warns(user_id))
 
 
-async def clear_warn(warn_id: int) -> dict[str, Any]:
+async def clear_warn(warn_id: int) -> Optional[dict[str, Any]]:
     try:
         res = supabase.table("warns").update({"active": False}).eq("warn_id", warn_id).execute()
         logger.info(f"Warn {warn_id} cleared")
-        return _row(res.data[0])
+        return _first(res.data)
     except Exception as e:
         logger.error(f"clear_warn({warn_id}): {e}")
         raise
@@ -960,7 +980,7 @@ async def clear_warn(warn_id: int) -> dict[str, Any]:
 async def get_ban(user_id: int) -> Optional[dict[str, Any]]:
     try:
         res = supabase.table("bans").select("*").eq("user_id", user_id).eq("active", True).execute()
-        return _row(res.data[0]) if res.data else None
+        return _first(res.data)
     except Exception as e:
         logger.error(f"get_ban({user_id}): {e}")
         raise
@@ -985,11 +1005,11 @@ async def ban_user(user_id: int, reason: str, banned_by: int) -> dict[str, Any]:
         raise
 
 
-async def unban_user(user_id: int) -> dict[str, Any]:
+async def unban_user(user_id: int) -> Optional[dict[str, Any]]:
     try:
         res = supabase.table("bans").update({"active": False}).eq("user_id", user_id).execute()
         logger.info(f"User {user_id} unbanned")
-        return _row(res.data[0])
+        return _first(res.data)
     except Exception as e:
         logger.error(f"unban_user({user_id}): {e}")
         raise
@@ -1036,7 +1056,10 @@ async def enrol_guild_global(guild_id: int, guild_name: str) -> dict[str, Any]:
             "guild_name":      guild_name,
         }).eq("guild_id", guild_id).execute()
         logger.info(f"Guild {guild_id} enrolled in global leaderboard")
-        return _row(res.data[0])
+        row = _first(res.data)
+        if row is None:
+            raise RuntimeError(f"enrol_guild_global: no row returned for guild {guild_id}")
+        return row
     except Exception as e:
         logger.error(f"enrol_guild_global({guild_id}): {e}")
         raise
@@ -1046,7 +1069,10 @@ async def set_guild_invite(guild_id: int, invite_url: str) -> dict[str, Any]:
     try:
         res = supabase.table("guilds").update({"invite_url": invite_url}).eq("guild_id", guild_id).execute()
         logger.info(f"Guild {guild_id} invite set: {invite_url}")
-        return _row(res.data[0])
+        row = _first(res.data)
+        if row is None:
+            raise RuntimeError(f"set_guild_invite: no row returned for guild {guild_id}")
+        return row
     except Exception as e:
         logger.error(f"set_guild_invite({guild_id}): {e}")
         raise
@@ -1113,14 +1139,15 @@ async def open_server_shop(guild_id: int, season_id: int) -> dict[str, Any]:
         config_res = supabase.table("guildconfig").update({"shop_enabled": True}).eq("guild_id", guild_id).execute()
 
         logger.info(f"Server shop opened for guild {guild_id} — ¥{SHOP_OPEN_COST:,} deducted from vault")
-        return _row(config_res.data[0])
+        row = _first(config_res.data)
+        if row is None:
+            raise RuntimeError(f"open_server_shop: no config row returned for guild {guild_id}")
+        return row
     except ValueError:
         raise
     except Exception as e:
         logger.error(f"open_server_shop({guild_id}, {season_id}): {e}")
         raise
-
-
 
 
 # ── Arcade stats ──────────────────────────────────────────────────────────────
@@ -1139,6 +1166,7 @@ async def get_arcade_stats(user_id: int) -> list[dict[str, Any]]:
     except Exception as e:
         logger.error(f"get_arcade_stats({user_id}): {e}")
         raise
+
 
 # ── top.gg ────────────────────────────────────────────────────────────────────
 
