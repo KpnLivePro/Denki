@@ -17,11 +17,45 @@ from embeds import Embeds
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(levelname)s] %(name)s: %(message)s",
-    stream=sys.stdout,
-)
+IS_LOCAL = os.environ.get("NODE_ENV") == "development" or not os.environ.get("CONTAINER_APP_NAME")
+
+if IS_LOCAL:
+    try:
+        import colorama
+        from colorama import Fore, Style
+        colorama.init(autoreset=True)
+
+        class ColorFormatter(logging.Formatter):
+            COLORS = {
+                logging.DEBUG:    Fore.CYAN,
+                logging.INFO:     Fore.GREEN,
+                logging.WARNING:  Fore.YELLOW,
+                logging.ERROR:    Fore.RED,
+                logging.CRITICAL: Fore.MAGENTA,
+            }
+            def format(self, record: logging.LogRecord) -> str:
+                color = self.COLORS.get(record.levelno, "")
+                record.levelname = f"{color}[{record.levelname}]{Style.RESET_ALL}"
+                record.name      = f"{Fore.CYAN}{record.name}{Style.RESET_ALL}"
+                return super().format(record)
+
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(ColorFormatter("[%(levelname)s] %(name)s: %(message)s"))
+        logging.basicConfig(level=logging.INFO, handlers=[handler])
+
+    except ImportError:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="[%(levelname)s] %(name)s: %(message)s",
+            stream=sys.stdout,
+        )
+else:
+    # Azure — plain text, no ANSI codes
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(levelname)s] %(name)s: %(message)s",
+        stream=sys.stdout,
+    )
 
 # Silence noisy third-party loggers
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -29,6 +63,8 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("discord.http").setLevel(logging.WARNING)
 logging.getLogger("discord.gateway").setLevel(logging.WARNING)
 logging.getLogger("discord.client").setLevel(logging.WARNING)
+
+logger = logging.getLogger("denki")
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -85,8 +121,8 @@ bot = DenkiBot(
     help_command=None,
 )
 
-bot.topgg_token = TOPGG_TOKEN 
-bot.bot_id      = BOT_ID       
+bot.topgg_token = TOPGG_TOKEN  # type: ignore[attr-defined]
+bot.bot_id      = BOT_ID       # type: ignore[attr-defined]
 
 
 # ── Global checks ─────────────────────────────────────────────────────────────
@@ -148,9 +184,6 @@ async def on_ready() -> None:
     logger.info("denki.startup topgg_configured=%s", bool(TOPGG_TOKEN))
     logger.info("denki.startup status=ready")
 
-    # NOTE: bot.log.online() is called by cogs/logz.py on_ready — not here.
-    # Calling it here too would send a duplicate startup notice.
-
 
 @bot.event
 async def on_disconnect() -> None:
@@ -205,7 +238,6 @@ async def on_guild_update(before: discord.Guild, after: discord.Guild) -> None:
 @bot.event
 async def on_member_join(member: discord.Member) -> None:
     guild = member.guild
-    # Only act on guilds already registered — avoids touching unregistered guilds
     guild_data = await db.get_guild(guild.id)
     if not guild_data:
         return
@@ -220,8 +252,6 @@ async def on_member_join(member: discord.Member) -> None:
 @bot.event
 async def on_member_remove(member: discord.Member) -> None:
     guild = member.guild
-    # Guard: only act on registered guilds — prevents the IndexError crash
-    # that occurs when set_guild_global UPDATE matches no row.
     guild_data = await db.get_guild(guild.id)
     if not guild_data:
         return
@@ -235,7 +265,6 @@ async def on_member_remove(member: discord.Member) -> None:
 
 @bot.event
 async def on_command_error(ctx: commands.Context[Any], error: commands.CommandError) -> None:
-    # Gracefully handled errors — reply only, don't ship to Discord log
     if isinstance(error, commands.CommandNotFound):
         return
     if isinstance(error, commands.NotOwner):
@@ -253,8 +282,6 @@ async def on_command_error(ctx: commands.Context[Any], error: commands.CommandEr
     if isinstance(error, commands.CheckFailure):
         return
 
-    # Unexpected — log to console and reply to user.
-    # cogs/logz.py on_command_error also fires and ships to Discord.
     logger.error("denki.command error=%r command=%r", str(error), str(ctx.command), exc_info=error)
     await ctx.reply(embed=Embeds.error("Something went wrong. The error has been logged."))
 
