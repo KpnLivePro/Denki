@@ -19,11 +19,16 @@ from embeds import Embeds
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%dT%H:%M:%S",
+    format="[%(levelname)s] %(name)s: %(message)s",
     stream=sys.stdout,
 )
-logger = logging.getLogger("denki")
+
+# Silence noisy third-party loggers
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("discord.http").setLevel(logging.WARNING)
+logging.getLogger("discord.gateway").setLevel(logging.WARNING)
+logging.getLogger("discord.client").setLevel(logging.WARNING)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -80,8 +85,8 @@ bot = DenkiBot(
     help_command=None,
 )
 
-bot.topgg_token = TOPGG_TOKEN  # type: ignore[attr-defined]
-bot.bot_id      = BOT_ID       # type: ignore[attr-defined]
+bot.topgg_token = TOPGG_TOKEN 
+bot.bot_id      = BOT_ID       
 
 
 # ── Global checks ─────────────────────────────────────────────────────────────
