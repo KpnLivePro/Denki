@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone, date, timedelta
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from dotenv import load_dotenv
@@ -39,21 +39,12 @@ def _rows(data: Any) -> list[dict[str, Any]]:
     return [dict(r) for r in data]
 
 
-def _first(data: Any) -> Optional[dict[str, Any]]:
-    """
-    Safely return the first row from a Supabase response.
-    UPDATE/UPSERT returns [] when no row matched the WHERE clause —
-    using data[0] directly raises IndexError in that case.
-    """
-    return _row(data[0]) if data else None
-
-
 # ── Users ─────────────────────────────────────────────────────────────────────
 
 async def get_user(user_id: int) -> Optional[dict[str, Any]]:
     try:
         res = supabase.table("users").select("*").eq("user_id", user_id).execute()
-        return _first(res.data)
+        return _row(res.data[0]) if res.data else None
     except Exception as e:
         logger.error(f"get_user({user_id}): {e}")
         raise
@@ -87,10 +78,7 @@ async def update_wallet(user_id: int, amount: int) -> dict[str, Any]:
                 f"Insufficient funds. Wallet: ¥{user['wallet']:,} — tried to change by ¥{amount:,}."
             )
         res = supabase.table("users").update({"wallet": new_balance}).eq("user_id", user_id).execute()
-        row = _first(res.data)
-        if row is None:
-            raise RuntimeError(f"update_wallet: no row returned for user {user_id}")
-        return row
+        return _row(res.data[0])
     except ValueError:
         raise
     except Exception as e:
@@ -99,6 +87,11 @@ async def update_wallet(user_id: int, amount: int) -> dict[str, Any]:
 
 
 async def get_richest_user() -> Optional[dict[str, Any]]:
+    """
+    Return the single user with the highest wallet balance across the entire network.
+    Used by the website push to populate the hero orbit badge.
+    Returns { user_id, wallet } or None if no users exist.
+    """
     try:
         res = (
             supabase.table("users")
@@ -107,7 +100,7 @@ async def get_richest_user() -> Optional[dict[str, Any]]:
             .limit(1)
             .execute()
         )
-        return _first(res.data)
+        return _row(res.data[0]) if res.data else None
     except Exception as e:
         logger.error(f"get_richest_user(): {e}")
         raise
@@ -116,6 +109,7 @@ async def get_richest_user() -> Optional[dict[str, Any]]:
 # ── Vote streak ───────────────────────────────────────────────────────────────
 
 async def get_vote_streak(user_id: int) -> tuple[int, Optional[datetime]]:
+    """Returns (vote_streak, last_vote_at) for a user."""
     try:
         user   = await get_or_create_user(user_id)
         streak = int(user.get("vote_streak") or 0)
@@ -128,6 +122,11 @@ async def get_vote_streak(user_id: int) -> tuple[int, Optional[datetime]]:
 
 
 async def update_vote_streak(user_id: int) -> int:
+    """
+    Increment or reset the vote streak based on last_vote_at, then stamp now.
+    36h window: top.gg cooldown is 12h, 24h grace for late voters.
+    Returns the new streak value.
+    """
     try:
         streak, last_vote_at = await get_vote_streak(user_id)
         now = datetime.now(timezone.utc)
@@ -153,10 +152,22 @@ async def update_vote_streak(user_id: int) -> int:
 
 
 def calculate_streak_bonus(base: int, streak: int) -> int:
-    if streak >= 30: return int(base * 2.0)
-    if streak >= 14: return int(base * 1.5)
-    if streak >= 7:  return int(base * 1.25)
-    if streak >= 3:  return int(base * 1.10)
+    """
+    Apply streak multiplier to base vote reward.
+    1–2  days  → 1.0x
+    3–6  days  → 1.1x
+    7–13 days  → 1.25x
+    14–29 days → 1.5x
+    30+  days  → 2.0x
+    """
+    if streak >= 30:
+        return int(base * 2.0)
+    if streak >= 14:
+        return int(base * 1.5)
+    if streak >= 7:
+        return int(base * 1.25)
+    if streak >= 3:
+        return int(base * 1.10)
     return base
 
 
@@ -165,7 +176,7 @@ def calculate_streak_bonus(base: int, streak: int) -> int:
 async def get_guild(guild_id: int) -> Optional[dict[str, Any]]:
     try:
         res = supabase.table("guilds").select("*").eq("guild_id", guild_id).execute()
-        return _first(res.data)
+        return _row(res.data[0]) if res.data else None
     except Exception as e:
         logger.error(f"get_guild({guild_id}): {e}")
         raise
@@ -189,7 +200,16 @@ async def get_or_create_guild(guild_id: int) -> dict[str, Any]:
         raise
 
 
-async def update_guild_meta(guild_id: int, name: str, icon_url: Optional[str]) -> None:
+async def update_guild_meta(
+    guild_id: int,
+    name: str,
+    icon_url: Optional[str],
+) -> None:
+    """
+    Persist the guild's display name and icon URL to the guilds table.
+    Called on on_guild_join and on_guild_update so the website always has
+    fresh data without making live Discord API calls.
+    """
     try:
         await get_or_create_guild(guild_id)
         supabase.table("guilds").update({
@@ -202,14 +222,10 @@ async def update_guild_meta(guild_id: int, name: str, icon_url: Optional[str]) -
         raise
 
 
-async def set_guild_global(guild_id: int, is_global: bool) -> Optional[dict[str, Any]]:
-    """
-    Returns None when the guild row doesn't exist yet (UPDATE matched nothing).
-    Callers in on_member_join/remove should check for None and skip if unregistered.
-    """
+async def set_guild_global(guild_id: int, is_global: bool) -> dict[str, Any]:
     try:
         res = supabase.table("guilds").update({"global": is_global}).eq("guild_id", guild_id).execute()
-        return _first(res.data)
+        return _row(res.data[0])
     except Exception as e:
         logger.error(f"set_guild_global({guild_id}, {is_global}): {e}")
         raise
@@ -225,10 +241,7 @@ async def increment_guild_wins(guild_id: int) -> dict[str, Any]:
             "tier": new_tier,
         }).eq("guild_id", guild_id).execute()
         logger.info(f"Guild {guild_id} wins: {new_wins}, tier: {new_tier}")
-        row = _first(res.data)
-        if row is None:
-            raise RuntimeError(f"increment_guild_wins: no row returned for guild {guild_id}")
-        return row
+        return _row(res.data[0])
     except Exception as e:
         logger.error(f"increment_guild_wins({guild_id}): {e}")
         raise
@@ -238,10 +251,7 @@ async def reset_guild_wins(guild_id: int) -> dict[str, Any]:
     try:
         res = supabase.table("guilds").update({"wins": 0, "tier": 1}).eq("guild_id", guild_id).execute()
         logger.info(f"Guild {guild_id} win streak reset")
-        row = _first(res.data)
-        if row is None:
-            raise RuntimeError(f"reset_guild_wins: no row returned for guild {guild_id}")
-        return row
+        return _row(res.data[0])
     except Exception as e:
         logger.error(f"reset_guild_wins({guild_id}): {e}")
         raise
@@ -260,7 +270,7 @@ def _calculate_tier(wins: int) -> int:
 async def get_guild_config(guild_id: int) -> Optional[dict[str, Any]]:
     try:
         res = supabase.table("guildconfig").select("*").eq("guild_id", guild_id).execute()
-        return _first(res.data)
+        return _row(res.data[0]) if res.data else None
     except Exception as e:
         logger.error(f"get_guild_config({guild_id}): {e}")
         raise
@@ -273,17 +283,13 @@ async def get_or_create_guild_config(guild_id: int) -> dict[str, Any]:
             return config
         await get_or_create_guild(guild_id)
         res = supabase.table("guildconfig").insert({
-            "guild_id":                  guild_id,
-            "daily_enabled":             True,
-            "work_enabled":              True,
-            "rob_enabled":               True,
-            "notif_channel":             None,
-            "notif_role":                None,
-            "shop_enabled":              False,
-            "tea_ai_enabled":            False,
-            "tea_ai_seasons_remaining":  0,
-            "tea_ai_purchased_season":   None,
-            "cashback_enabled":          False,
+            "guild_id":      guild_id,
+            "daily_enabled": True,
+            "work_enabled":  True,
+            "rob_enabled":   True,
+            "notif_channel": None,
+            "notif_role":    None,
+            "shop_enabled":  False,
         }).execute()
         logger.info(f"Created guildconfig for guild {guild_id}")
         return _row(res.data[0])
@@ -304,10 +310,7 @@ async def update_guild_config(guild_id: int, updates: dict[str, Any]) -> dict[st
         if not any(earn_flags):
             raise ValueError("Cannot disable all three earning methods. At least one must remain active.")
         res = supabase.table("guildconfig").update(updates).eq("guild_id", guild_id).execute()
-        row = _first(res.data)
-        if row is None:
-            raise RuntimeError(f"update_guild_config: no row returned for guild {guild_id}")
-        return row
+        return _row(res.data[0])
     except ValueError:
         raise
     except Exception as e:
@@ -315,248 +318,12 @@ async def update_guild_config(guild_id: int, updates: dict[str, Any]) -> dict[st
         raise
 
 
-# ── Server upgrades ───────────────────────────────────────────────────────────
-
-TEA_AI_SEASONS = 3   # how many seasons Tea AI lasts per purchase
-
-
-async def get_guild_tea_ai(guild_id: int) -> bool:
-    """Returns True if this guild has Tea AI active (seasons_remaining > 0). Fails safe to False."""
-    try:
-        config = await get_guild_config(guild_id)
-        if not config:
-            return False
-        return int(config.get("tea_ai_seasons_remaining", 0)) > 0
-    except Exception as e:
-        logger.error(f"get_guild_tea_ai({guild_id}): {e}")
-        return False
-
-
-async def get_guild_tea_ai_seasons_remaining(guild_id: int) -> int:
-    """Returns how many seasons of Tea AI are left for this guild."""
-    try:
-        config = await get_guild_config(guild_id)
-        return int(config.get("tea_ai_seasons_remaining", 0)) if config else 0
-    except Exception as e:
-        logger.error(f"get_guild_tea_ai_seasons_remaining({guild_id}): {e}")
-        return 0
-
-
-async def get_guild_cashback(guild_id: int) -> bool:
-    """Returns True if this guild has Weekly Cashback enabled."""
-    try:
-        config = await get_guild_config(guild_id)
-        return bool(config.get("cashback_enabled", False)) if config else False
-    except Exception as e:
-        logger.error(f"get_guild_cashback({guild_id}): {e}")
-        return False
-
-
-async def apply_server_upgrade(guild_id: int, effect: str, season_id: int | None = None) -> None:
-    """
-    Apply a server_upgrade shop item effect to a guild.
-    Tea AI grants TEA_AI_SEASONS seasons — stacks if purchased again while active.
-    """
-    await get_or_create_guild_config(guild_id)
-
-    if effect == "tea_ai":
-        current = await get_guild_tea_ai_seasons_remaining(guild_id)
-        new_remaining = current + TEA_AI_SEASONS
-        supabase.table("guildconfig").update({
-            "tea_ai_enabled":           True,
-            "tea_ai_seasons_remaining": new_remaining,
-            "tea_ai_purchased_season":  season_id,
-        }).eq("guild_id", guild_id).execute()
-        logger.info(f"Tea AI enabled for guild {guild_id} — {new_remaining} seasons remaining")
-
-    elif effect == "cashback":
-        supabase.table("guildconfig").update(
-            {"cashback_enabled": True}
-        ).eq("guild_id", guild_id).execute()
-        logger.info(f"Weekly Cashback enabled for guild {guild_id}")
-
-    else:
-        raise ValueError(f"Unknown server upgrade effect: '{effect}'")
-
-
-async def tick_tea_ai_seasons() -> list[int]:
-    """
-    Called at the end of every season by run_season_end.
-    Decrements tea_ai_seasons_remaining by 1 for all active guilds.
-    Disables tea_ai_enabled on any guild that reaches 0.
-    Returns list of guild_ids whose Tea AI just expired.
-    """
-    try:
-        res = (
-            supabase.table("guildconfig")
-            .select("config_id, guild_id, tea_ai_seasons_remaining")
-            .gt("tea_ai_seasons_remaining", 0)
-            .execute()
-        )
-        rows    = _rows(res.data)
-        expired = []
-
-        for row in rows:
-            new_remaining = int(row["tea_ai_seasons_remaining"]) - 1
-            update: dict[str, Any] = {"tea_ai_seasons_remaining": new_remaining}
-            if new_remaining <= 0:
-                update["tea_ai_enabled"] = False
-                expired.append(int(row["guild_id"]))
-            supabase.table("guildconfig").update(update).eq("config_id", row["config_id"]).execute()
-
-        if expired:
-            logger.info(f"Tea AI expired for guilds: {expired}")
-        return expired
-    except Exception as e:
-        logger.error(f"tick_tea_ai_seasons(): {e}")
-        return []
-
-
-# ── Cashback ──────────────────────────────────────────────────────────────────
-
-CASHBACK_RATE       = 0.15   # 15%
-CASHBACK_LOSS_TYPES = {
-    "gamble_loss", "tea_loss", "greentea_loss",
-}
-
-
-def _current_week_start() -> date:
-    """Returns the most recent Monday as a date."""
-    today = date.today()
-    return today - timedelta(days=today.weekday())
-
-
-async def record_loss_for_cashback(user_id: int, guild_id: int, amount: int) -> None:
-    """
-    Accumulate a loss into the cashback ledger for this week.
-    Only called if the guild has cashback enabled.
-    Only tracks losses > 0.
-    """
-    if amount <= 0:
-        return
-    try:
-        week_start = _current_week_start().isoformat()
-
-        existing = (
-            supabase.table("cashback")
-            .select("cashback_id, total_lost")
-            .eq("user_id",    user_id)
-            .eq("guild_id",   guild_id)
-            .eq("week_start", week_start)
-            .execute()
-        )
-        if existing.data:
-            row = _row(existing.data[0])
-            supabase.table("cashback").update({
-                "total_lost": int(row["total_lost"]) + amount
-            }).eq("cashback_id", row["cashback_id"]).execute()
-        else:
-            supabase.table("cashback").insert({
-                "user_id":    user_id,
-                "guild_id":   guild_id,
-                "week_start": week_start,
-                "total_lost": amount,
-                "paid_out":   0,
-            }).execute()
-    except Exception as e:
-        logger.error(f"record_loss_for_cashback({user_id}, {guild_id}, {amount}): {e}")
-
-
-async def get_cashback_claim(user_id: int, guild_id: int) -> Optional[dict[str, Any]]:
-    try:
-        now        = datetime.now(timezone.utc)
-        week_start = _current_week_start().isoformat()
-
-        if now.weekday() != 0 or now.hour >= 8:
-            return None
-
-        res = (
-            supabase.table("cashback")
-            .select("*")
-            .eq("user_id",    user_id)
-            .eq("guild_id",   guild_id)
-            .eq("week_start", week_start)
-            .is_("claimed_at", "null")
-            .execute()
-        )
-        return _first(res.data)
-    except Exception as e:
-        logger.error(f"get_cashback_claim({user_id}, {guild_id}): {e}")
-        return None
-
-
-async def claim_cashback(user_id: int, guild_id: int) -> Optional[int]:
-    try:
-        row = await get_cashback_claim(user_id, guild_id)
-        if not row:
-            return None
-
-        total_lost = int(row["total_lost"])
-        if total_lost <= 0:
-            return None
-
-        payout = max(1, int(total_lost * CASHBACK_RATE))
-
-        await update_wallet(user_id, payout)
-        await log_transaction(0, user_id, payout, "cashback_payout")
-
-        supabase.table("cashback").update({
-            "paid_out":   payout,
-            "claimed_at": datetime.now(timezone.utc).isoformat(),
-        }).eq("cashback_id", row["cashback_id"]).execute()
-
-        logger.info(f"Cashback claimed user={user_id} guild={guild_id} payout=¥{payout:,}")
-        return payout
-    except Exception as e:
-        logger.error(f"claim_cashback({user_id}, {guild_id}): {e}")
-        return None
-
-
-async def get_cashback_summary(user_id: int, guild_id: int) -> dict[str, Any]:
-    try:
-        now        = datetime.now(timezone.utc)
-        week_start = _current_week_start().isoformat()
-
-        res = (
-            supabase.table("cashback")
-            .select("*")
-            .eq("user_id",    user_id)
-            .eq("guild_id",   guild_id)
-            .eq("week_start", week_start)
-            .execute()
-        )
-
-        if not res.data:
-            return {"total_lost": 0, "paid_out": 0, "claimed": False, "claimable": False, "payout": 0}
-
-        row        = _row(res.data[0])
-        total_lost = int(row["total_lost"])
-        paid_out   = int(row["paid_out"])
-        claimed    = row.get("claimed_at") is not None
-        is_monday  = now.weekday() == 0
-        in_window  = is_monday and now.hour < 8
-        claimable  = in_window and not claimed and total_lost > 0
-        payout     = max(1, int(total_lost * CASHBACK_RATE)) if total_lost > 0 else 0
-
-        return {
-            "total_lost": total_lost,
-            "paid_out":   paid_out,
-            "claimed":    claimed,
-            "claimable":  claimable,
-            "payout":     payout,
-            "in_window":  in_window,
-        }
-    except Exception as e:
-        logger.error(f"get_cashback_summary({user_id}, {guild_id}): {e}")
-        return {"total_lost": 0, "paid_out": 0, "claimed": False, "claimable": False, "payout": 0}
-
-
 # ── Seasons ───────────────────────────────────────────────────────────────────
 
 async def get_active_season() -> Optional[dict[str, Any]]:
     try:
         res = supabase.table("seasons").select("*").eq("active", True).limit(1).execute()
-        return _first(res.data)
+        return _row(res.data[0]) if res.data else None
     except Exception as e:
         logger.error(f"get_active_season(): {e}")
         raise
@@ -565,7 +332,7 @@ async def get_active_season() -> Optional[dict[str, Any]]:
 async def get_season(season_id: int) -> Optional[dict[str, Any]]:
     try:
         res = supabase.table("seasons").select("*").eq("season_id", season_id).execute()
-        return _first(res.data)
+        return _row(res.data[0]) if res.data else None
     except Exception as e:
         logger.error(f"get_season({season_id}): {e}")
         raise
@@ -590,10 +357,7 @@ async def close_season(season_id: int) -> dict[str, Any]:
     try:
         res = supabase.table("seasons").update({"active": False}).eq("season_id", season_id).execute()
         logger.info(f"Closed season {season_id}")
-        row = _first(res.data)
-        if row is None:
-            raise RuntimeError(f"close_season: no row returned for season {season_id}")
-        return row
+        return _row(res.data[0])
     except Exception as e:
         logger.error(f"close_season({season_id}): {e}")
         raise
@@ -602,10 +366,7 @@ async def close_season(season_id: int) -> dict[str, Any]:
 async def update_season(season_id: int, updates: dict[str, Any]) -> dict[str, Any]:
     try:
         res = supabase.table("seasons").update(updates).eq("season_id", season_id).execute()
-        row = _first(res.data)
-        if row is None:
-            raise RuntimeError(f"update_season: no row returned for season {season_id}")
-        return row
+        return _row(res.data[0])
     except Exception as e:
         logger.error(f"update_season({season_id}, {updates}): {e}")
         raise
@@ -623,7 +384,7 @@ async def get_bank(user_id: int, guild_id: int, season_id: int) -> Optional[dict
             .eq("season_id", season_id)
             .execute()
         )
-        return _first(res.data)
+        return _row(res.data[0]) if res.data else None
     except Exception as e:
         logger.error(f"get_bank({user_id}, {guild_id}, {season_id}): {e}")
         raise
@@ -658,10 +419,7 @@ async def update_bank_balance(user_id: int, guild_id: int, season_id: int, amoun
         if amount > 0:
             update_data["total_earned"] = int(bank["total_earned"]) + amount
         res = supabase.table("banks").update(update_data).eq("bank_id", bank["bank_id"]).execute()
-        row = _first(res.data)
-        if row is None:
-            raise RuntimeError(f"update_bank_balance: no row returned for bank {bank['bank_id']}")
-        return row
+        return _row(res.data[0])
     except ValueError:
         raise
     except Exception as e:
@@ -678,10 +436,7 @@ async def add_investment(user_id: int, guild_id: int, season_id: int, amount: in
             "total_earned": int(bank["total_earned"]) + amount,
         }).eq("bank_id", bank["bank_id"]).execute()
         logger.info(f"User {user_id} invested ¥{amount:,} in guild {guild_id} season {season_id}")
-        row = _first(res.data)
-        if row is None:
-            raise RuntimeError(f"add_investment: no row returned for bank {bank['bank_id']}")
-        return row
+        return _row(res.data[0])
     except ValueError:
         raise
     except Exception as e:
@@ -724,6 +479,7 @@ async def get_season_vault_total(guild_id: int, season_id: int) -> int:
 # ── Cooldowns ─────────────────────────────────────────────────────────────────
 
 async def get_cooldown(user_id: int, cooldown_type: str) -> Optional[datetime]:
+    """cooldown_type: 'daily' | 'work' | 'rob' | 'vote'"""
     try:
         res = (
             supabase.table("cooldowns")
@@ -800,7 +556,7 @@ async def get_shop_items(guild_id: Optional[int] = None) -> list[dict[str, Any]]
 async def get_shop_item(item_id: int) -> Optional[dict[str, Any]]:
     try:
         res = supabase.table("shopitems").select("*").eq("item_id", item_id).execute()
-        return _first(res.data)
+        return _row(res.data[0]) if res.data else None
     except Exception as e:
         logger.error(f"get_shop_item({item_id}): {e}")
         raise
@@ -813,7 +569,6 @@ async def create_shop_item(
     price: int,
     item_type: str,
     role_id: Optional[int] = None,
-    effect: Optional[str] = None,
 ) -> dict[str, Any]:
     try:
         res = supabase.table("shopitems").insert({
@@ -823,7 +578,6 @@ async def create_shop_item(
             "price":       price,
             "type":        item_type,
             "role_id":     role_id,
-            "effect":      effect,
             "active":      True,
         }).execute()
         logger.info(f"Created shop item '{name}' for guild {guild_id}")
@@ -833,11 +587,11 @@ async def create_shop_item(
         raise
 
 
-async def disable_shop_item(item_id: int) -> Optional[dict[str, Any]]:
+async def disable_shop_item(item_id: int) -> dict[str, Any]:
     try:
         res = supabase.table("shopitems").update({"active": False}).eq("item_id", item_id).execute()
         logger.info(f"Disabled shop item {item_id}")
-        return _first(res.data)
+        return _row(res.data[0])
     except Exception as e:
         logger.error(f"disable_shop_item({item_id}): {e}")
         raise
@@ -918,10 +672,10 @@ async def get_reports(
         raise
 
 
-async def update_report_status(report_id: int, status: str) -> Optional[dict[str, Any]]:
+async def update_report_status(report_id: int, status: str) -> dict[str, Any]:
     try:
         res = supabase.table("reports").update({"status": status}).eq("report_id", report_id).execute()
-        return _first(res.data)
+        return _row(res.data[0])
     except Exception as e:
         logger.error(f"update_report_status({report_id}, {status}): {e}")
         raise
@@ -965,11 +719,11 @@ async def count_active_warns(user_id: int) -> int:
     return len(await get_active_warns(user_id))
 
 
-async def clear_warn(warn_id: int) -> Optional[dict[str, Any]]:
+async def clear_warn(warn_id: int) -> dict[str, Any]:
     try:
         res = supabase.table("warns").update({"active": False}).eq("warn_id", warn_id).execute()
         logger.info(f"Warn {warn_id} cleared")
-        return _first(res.data)
+        return _row(res.data[0])
     except Exception as e:
         logger.error(f"clear_warn({warn_id}): {e}")
         raise
@@ -980,7 +734,7 @@ async def clear_warn(warn_id: int) -> Optional[dict[str, Any]]:
 async def get_ban(user_id: int) -> Optional[dict[str, Any]]:
     try:
         res = supabase.table("bans").select("*").eq("user_id", user_id).eq("active", True).execute()
-        return _first(res.data)
+        return _row(res.data[0]) if res.data else None
     except Exception as e:
         logger.error(f"get_ban({user_id}): {e}")
         raise
@@ -1005,11 +759,11 @@ async def ban_user(user_id: int, reason: str, banned_by: int) -> dict[str, Any]:
         raise
 
 
-async def unban_user(user_id: int) -> Optional[dict[str, Any]]:
+async def unban_user(user_id: int) -> dict[str, Any]:
     try:
         res = supabase.table("bans").update({"active": False}).eq("user_id", user_id).execute()
         logger.info(f"User {user_id} unbanned")
-        return _first(res.data)
+        return _row(res.data[0])
     except Exception as e:
         logger.error(f"unban_user({user_id}): {e}")
         raise
@@ -1056,10 +810,7 @@ async def enrol_guild_global(guild_id: int, guild_name: str) -> dict[str, Any]:
             "guild_name":      guild_name,
         }).eq("guild_id", guild_id).execute()
         logger.info(f"Guild {guild_id} enrolled in global leaderboard")
-        row = _first(res.data)
-        if row is None:
-            raise RuntimeError(f"enrol_guild_global: no row returned for guild {guild_id}")
-        return row
+        return _row(res.data[0])
     except Exception as e:
         logger.error(f"enrol_guild_global({guild_id}): {e}")
         raise
@@ -1069,10 +820,7 @@ async def set_guild_invite(guild_id: int, invite_url: str) -> dict[str, Any]:
     try:
         res = supabase.table("guilds").update({"invite_url": invite_url}).eq("guild_id", guild_id).execute()
         logger.info(f"Guild {guild_id} invite set: {invite_url}")
-        row = _first(res.data)
-        if row is None:
-            raise RuntimeError(f"set_guild_invite: no row returned for guild {guild_id}")
-        return row
+        return _row(res.data[0])
     except Exception as e:
         logger.error(f"set_guild_invite({guild_id}): {e}")
         raise
@@ -1139,10 +887,7 @@ async def open_server_shop(guild_id: int, season_id: int) -> dict[str, Any]:
         config_res = supabase.table("guildconfig").update({"shop_enabled": True}).eq("guild_id", guild_id).execute()
 
         logger.info(f"Server shop opened for guild {guild_id} — ¥{SHOP_OPEN_COST:,} deducted from vault")
-        row = _first(config_res.data)
-        if row is None:
-            raise RuntimeError(f"open_server_shop: no config row returned for guild {guild_id}")
-        return row
+        return _row(config_res.data[0])
     except ValueError:
         raise
     except Exception as e:
@@ -1150,30 +895,21 @@ async def open_server_shop(guild_id: int, season_id: int) -> dict[str, Any]:
         raise
 
 
-# ── Arcade stats ──────────────────────────────────────────────────────────────
-
-async def get_arcade_stats(user_id: int) -> list[dict[str, Any]]:
-    """Return all arcade_stats rows for a user, one per game type."""
-    try:
-        res = (
-            supabase.table("arcade_stats")
-            .select("*")
-            .eq("user_id", user_id)
-            .order("game")
-            .execute()
-        )
-        return _rows(res.data)
-    except Exception as e:
-        logger.error(f"get_arcade_stats({user_id}): {e}")
-        raise
-
-
 # ── top.gg ────────────────────────────────────────────────────────────────────
 
 async def check_topgg_vote(user_id: int, bot_id: int, topgg_token: str) -> dict:
+    """
+    Call top.gg REST API to check if a user has voted.
+    Returns { "voted": bool, "isWeekend": bool }
+
+    top.gg returns 404 when a user has never voted — this is not an error,
+    it just means voted=False. Only raise on unexpected status codes.
+    """
     import aiohttp
+
     url     = f"https://top.gg/api/bots/{bot_id}/check?userId={user_id}"
     headers = {"Authorization": topgg_token}
+
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as resp:
             if resp.status == 200:
@@ -1182,4 +918,7 @@ async def check_topgg_vote(user_id: int, bot_id: int, topgg_token: str) -> dict:
                     "voted":     bool(data.get("voted", 0)),
                     "isWeekend": bool(data.get("isWeekend", False)),
                 }
+            if resp.status == 404:
+                # User has never voted — treat as not voted, not an error
+                return {"voted": False, "isWeekend": False}
             raise RuntimeError(f"top.gg API returned HTTP {resp.status} for user {user_id}")
