@@ -17,12 +17,16 @@ from embeds import Embeds
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
-IS_LOCAL = os.environ.get("NODE_ENV") == "development" or not os.environ.get("CONTAINER_APP_NAME")
+# Prefer an explicit ENV var; fall back to absence of the ACA env var.
+IS_LOCAL: bool = os.environ.get("ENV", "production") == "development" or not os.environ.get(
+    "CONTAINER_APP_NAME"
+)
 
 if IS_LOCAL:
     try:
         import colorama
         from colorama import Fore, Style
+
         colorama.init(autoreset=True)
 
         class ColorFormatter(logging.Formatter):
@@ -33,15 +37,16 @@ if IS_LOCAL:
                 logging.ERROR:    Fore.RED,
                 logging.CRITICAL: Fore.MAGENTA,
             }
+
             def format(self, record: logging.LogRecord) -> str:
                 color = self.COLORS.get(record.levelno, "")
                 record.levelname = f"{color}[{record.levelname}]{Style.RESET_ALL}"
                 record.name      = f"{Fore.CYAN}{record.name}{Style.RESET_ALL}"
                 return super().format(record)
 
-        handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(ColorFormatter("[%(levelname)s] %(name)s: %(message)s"))
-        logging.basicConfig(level=logging.INFO, handlers=[handler])
+        _handler = logging.StreamHandler(sys.stdout)
+        _handler.setFormatter(ColorFormatter("[%(levelname)s] %(name)s: %(message)s"))
+        logging.basicConfig(level=logging.INFO, handlers=[_handler])
 
     except ImportError:
         logging.basicConfig(
@@ -50,7 +55,7 @@ if IS_LOCAL:
             stream=sys.stdout,
         )
 else:
-    # Azure — plain text, no ANSI codes
+    # Azure Container Apps — plain text, no ANSI codes
     logging.basicConfig(
         level=logging.INFO,
         format="[%(levelname)s] %(name)s: %(message)s",
@@ -58,18 +63,15 @@ else:
     )
 
 # Silence noisy third-party loggers
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("discord.http").setLevel(logging.WARNING)
-logging.getLogger("discord.gateway").setLevel(logging.WARNING)
-logging.getLogger("discord.client").setLevel(logging.WARNING)
+for _noisy in ("httpx", "httpcore", "discord.http", "discord.gateway", "discord.client"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 logger = logging.getLogger("denki")
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
 TOKEN:       str = os.environ.get("DISCORD_TOKEN", "")
-OWNER_ID:    int = int(os.environ.get("OWNER_ID", "0"))
+OWNER_ID:    int = int(os.environ.get("OWNER_ID", "0") or "0")
 TOPGG_TOKEN: str = os.environ.get("TOPGG_TOKEN", "")
 BOT_ID:      int = 1422399195062734881
 PREFIX:      str = "!d "
@@ -91,7 +93,7 @@ if not TOPGG_TOKEN:
 # ── Cogs ──────────────────────────────────────────────────────────────────────
 
 COGS: list[str] = [
-    "cogs.logz",      # must be first — attaches bot.log before other cogs need it
+    "cogs.logz",        # must be first — attaches bot.log before other cogs need it
     "cogs.help",
     "cogs.init",
     "cogs.economy",
@@ -108,32 +110,69 @@ COGS: list[str] = [
     "cogs.website_push",
 ]
 
-# ── Bot ───────────────────────────────────────────────────────────────────────
+# ── Bot subclass ──────────────────────────────────────────────────────────────
 
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members         = True
+class Denki(DenkiBot):
+    """
+    Bot subclass that loads extensions and syncs the command tree
+    inside setup_hook — the correct discord.py 2.x pattern.
+    This guarantees cogs are loaded before the bot connects to the gateway.
+    """
 
-bot = DenkiBot(
-    command_prefix=PREFIX,
-    intents=intents,
-    owner_id=OWNER_ID,
-    help_command=None,
-)
+    def __init__(self) -> None:
+        intents = discord.Intents.default()
+        intents.message_content = True
+        intents.members          = True
 
-bot.topgg_token = TOPGG_TOKEN  # type: ignore[attr-defined]
-bot.bot_id      = BOT_ID       # type: ignore[attr-defined]
+        super().__init__(
+            command_prefix=PREFIX,
+            intents=intents,
+            owner_id=OWNER_ID,
+            help_command=None,
+        )
+        # Expose runtime tokens to cogs via bot attributes
+        self.topgg_token: str = TOPGG_TOKEN
+        self.bot_id:      int = BOT_ID
 
+    async def setup_hook(self) -> None:
+        """Called once after login, before connecting to the gateway."""
+        # Load all cogs
+        for cog in COGS:
+            try:
+                await self.load_extension(cog)
+                logger.info("denki.cog action=loaded name=%s", cog)
+            except Exception as exc:
+                logger.error(
+                    "denki.cog action=failed name=%s error=%r",
+                    cog, str(exc), exc_info=exc,
+                )
+
+        # Sync slash commands globally once on startup.
+        # On local dev you may want to guild-sync for instant propagation:
+        # await self.tree.sync(guild=discord.Object(id=YOUR_GUILD_ID))
+        try:
+            synced = await self.tree.sync()
+            logger.info("denki.startup synced=%d slash commands", len(synced))
+        except Exception as exc:
+            logger.error("denki.startup slash sync failed: %s", exc)
+
+        # Prime the embed colour cache from the active season
+        await embeds_module.refresh_season_color()
+
+
+bot = Denki()
 
 # ── Global checks ─────────────────────────────────────────────────────────────
 
 @bot.check
 async def global_ban_check(ctx: commands.Context[Any]) -> bool:
     if await db.is_banned(ctx.author.id):
-        await ctx.reply(embed=Embeds.error(
-            "You have been banned from Denki. "
-            "If you believe this is a mistake, contact the bot owner."
-        ))
+        await ctx.reply(
+            embed=Embeds.error(
+                "You have been banned from Denki. "
+                "If you believe this is a mistake, contact the bot owner."
+            )
+        )
         return False
     return True
 
@@ -150,17 +189,21 @@ async def slash_ban_check(interaction: discord.Interaction) -> bool:
         return False
     return True
 
-bot.tree.interaction_check = slash_ban_check  # type: ignore[assignment]
 
+bot.tree.interaction_check = slash_ban_check  # type: ignore[assignment]
 
 # ── Events ────────────────────────────────────────────────────────────────────
 
 @bot.event
 async def on_ready() -> None:
-    user_id   = bot.user.id   if bot.user else "unknown"
-    user_name = str(bot.user) if bot.user else "unknown"
-
-    await embeds_module.refresh_season_color()
+    assert bot.user is not None
+    logger.info(
+        "denki.startup bot=%s id=%s guilds=%d",
+        str(bot.user), bot.user.id, len(bot.guilds),
+    )
+    logger.info("denki.startup invite=%s", INVITE)
+    logger.info("denki.startup topgg_configured=%s", bool(TOPGG_TOKEN))
+    logger.info("denki.startup status=ready")
 
     await bot.change_presence(
         activity=discord.Activity(
@@ -168,21 +211,6 @@ async def on_ready() -> None:
             name="the global economy ⚡",
         )
     )
-
-    try:
-        synced       = await bot.tree.sync()
-        synced_count = len(synced)
-    except Exception as e:
-        logger.error(f"Failed to sync slash commands: {e}")
-        synced_count = 0
-
-    logger.info(
-        "denki.startup bot=%s id=%s guilds=%d cogs=%d commands=%d",
-        user_name, user_id, len(bot.guilds), len(COGS), synced_count,
-    )
-    logger.info("denki.startup invite=%s", INVITE)
-    logger.info("denki.startup topgg_configured=%s", bool(TOPGG_TOKEN))
-    logger.info("denki.startup status=ready")
 
 
 @bot.event
@@ -216,28 +244,23 @@ async def on_guild_join(guild: discord.Guild) -> None:
 async def on_guild_remove(guild: discord.Guild) -> None:
     logger.info("denki.guild action=leave id=%d name=%r", guild.id, guild.name)
     if hasattr(bot, "log"):
-        await bot.log.warn(
-            "Guild Left",
-            f"> **{guild.name}** (`{guild.id}`)",
-        )
+        await bot.log.warn("Guild Left", f"> **{guild.name}** (`{guild.id}`)")
 
 
 @bot.event
 async def on_guild_update(before: discord.Guild, after: discord.Guild) -> None:
-    name_changed = before.name != after.name
-    icon_changed = before.icon != after.icon
-    if name_changed or icon_changed:
+    if before.name != after.name or before.icon != after.icon:
         icon_url = str(after.icon.url) if after.icon else None
         await db.update_guild_meta(after.id, after.name, icon_url)
         logger.info(
             "denki.guild action=update id=%d name=%r icon_changed=%s",
-            after.id, after.name, icon_changed,
+            after.id, after.name, before.icon != after.icon,
         )
 
 
 @bot.event
 async def on_member_join(member: discord.Member) -> None:
-    guild = member.guild
+    guild      = member.guild
     guild_data = await db.get_guild(guild.id)
     if not guild_data:
         return
@@ -251,7 +274,7 @@ async def on_member_join(member: discord.Member) -> None:
 
 @bot.event
 async def on_member_remove(member: discord.Member) -> None:
-    guild = member.guild
+    guild      = member.guild
     guild_data = await db.get_guild(guild.id)
     if not guild_data:
         return
@@ -282,7 +305,11 @@ async def on_command_error(ctx: commands.Context[Any], error: commands.CommandEr
     if isinstance(error, commands.CheckFailure):
         return
 
-    logger.error("denki.command error=%r command=%r", str(error), str(ctx.command), exc_info=error)
+    logger.error(
+        "denki.command error=%r command=%r",
+        str(error), str(ctx.command),
+        exc_info=error,
+    )
     await ctx.reply(embed=Embeds.error("Something went wrong. The error has been logged."))
 
 
@@ -299,23 +326,10 @@ async def on_error(event: str, *args: Any, **kwargs: Any) -> None:
             context=f"Event: {event}",
         )
 
-
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 async def main() -> None:
     async with bot:
-        for cog in COGS:
-            try:
-                await bot.load_extension(cog)
-                logger.info("denki.cog action=loaded name=%s", cog)
-            except Exception as e:
-                logger.error(
-                    "denki.cog action=failed name=%s error=%r",
-                    cog, str(e), exc_info=e,
-                )
-                if hasattr(bot, "log"):
-                    await bot.log.cog_fail(cog, e)
-
         try:
             await bot.start(TOKEN)
         except asyncio.CancelledError:
