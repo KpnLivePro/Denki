@@ -11,9 +11,9 @@ import discord
 from discord.ext import commands
 
 import db
-import embeds as embeds_module
+import ui as ui_module
 from cogs.logz import DenkiBot
-from embeds import Embeds
+from ui import UI as Embeds
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -157,7 +157,7 @@ class Denki(DenkiBot):
             logger.error("denki.startup slash sync failed: %s", exc)
 
         # Prime the embed colour cache from the active season
-        await embeds_module.refresh_season_color()
+        await ui_module.refresh_season_color()
 
 
 bot = Denki()

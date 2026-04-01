@@ -8,7 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import db
-from embeds import Embeds
+from ui import UI
 
 logger = logging.getLogger("denki.shop")
 
@@ -33,10 +33,8 @@ async def _defer(ctx_or_interaction: Any, is_slash: bool, ephemeral: bool = Fals
         await ctx_or_interaction.response.defer(ephemeral=ephemeral)
 
 
-# ── Upgrade already-owned check ───────────────────────────────────────────────
-
 async def _guild_owns_upgrade(guild_id: int, effect: str) -> bool:
-    """Check if a server upgrade is already active for this guild."""
+    """Return True if a server upgrade is already active for this guild."""
     config = await db.get_guild_config(guild_id)
     if not config:
         return False
@@ -47,13 +45,15 @@ async def _guild_owns_upgrade(guild_id: int, effect: str) -> bool:
     return False
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+
 class Shop(commands.Cog):
     """Shop commands — shop, buy, inventory, additem, removeitem, shopopen, cashback."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    # /shop
+    # ── /shop ─────────────────────────────────────────────────────────────────
 
     @app_commands.command(name="shop", description="Browse the server shop and global shop.")
     async def shop_slash(self, interaction: discord.Interaction) -> None:
@@ -65,8 +65,7 @@ class Shop(commands.Cog):
 
     async def _shop(self, ctx_or_interaction: Any, is_slash: bool) -> None:
         await _defer(ctx_or_interaction, is_slash)
-        guild = ctx_or_interaction.guild
-
+        guild  = ctx_or_interaction.guild
         config = await db.get_or_create_guild_config(guild.id)
 
         server_items: list[dict] = []
@@ -75,14 +74,17 @@ class Shop(commands.Cog):
 
         global_items = await db.get_shop_items(guild_id=None)
 
-        embed = Embeds.shop(
-            guild_name=guild.name,
-            server_items=server_items,
-            global_items=global_items,
+        await _respond(
+            ctx_or_interaction,
+            UI.shop(
+                guild_name=guild.name,
+                server_items=server_items,
+                global_items=global_items,
+            ),
+            is_slash,
         )
-        await _respond(ctx_or_interaction, embed, is_slash)
 
-    # /buy
+    # ── /buy ──────────────────────────────────────────────────────────────────
 
     @app_commands.command(name="buy", description="Purchase an item from the shop.")
     @app_commands.describe(item_id="Item ID shown in /shop")
@@ -99,68 +101,63 @@ class Shop(commands.Cog):
         guild  = ctx_or_interaction.guild
 
         item = await db.get_shop_item(item_id)
-
         if not item or not item["active"]:
             return await _respond(
                 ctx_or_interaction,
-                Embeds.error(f"Item `{item_id}` not found or is no longer available."),
+                UI.error(f"Item `{item_id}` not found or is no longer available."),
                 is_slash,
             )
 
-        # Server items can only be bought in their own server
         if item["guild_id"] and int(item["guild_id"]) != guild.id:
             return await _respond(
                 ctx_or_interaction,
-                Embeds.error("This item is only available in its own server."),
+                UI.error("This item is only available in its own server."),
                 is_slash,
             )
 
-        # ── Ownership check — differs by item type ────────────────────────────
+        # Ownership check — server upgrades and regular items differ
         if item["type"] == "server_upgrade":
             effect = item.get("effect") or ""
-            # Tea AI stacks (re-purchase extends seasons) — only block cashback re-purchase
             if effect == "cashback" and await _guild_owns_upgrade(guild.id, effect):
                 return await _respond(
                     ctx_or_interaction,
-                    Embeds.error("This server already has **Weekly Cashback** unlocked."),
+                    UI.error("This server already has **Weekly Cashback** unlocked."),
                     is_slash,
                 )
         else:
             if await db.user_owns_item(author.id, item_id):
                 return await _respond(
                     ctx_or_interaction,
-                    Embeds.error(f"You already own **{item['name']}**."),
+                    UI.error(f"You already own **{item['name']}**."),
                     is_slash,
                 )
 
-        price: int = int(item["price"])
+        price     = int(item["price"])
         user_data = await db.get_or_create_user(author.id)
         if int(user_data["wallet"]) < price:
             return await _respond(
                 ctx_or_interaction,
-                Embeds.error(f"Insufficient funds. This item costs ¥{price:,}."),
+                UI.error(f"Insufficient funds. This item costs ¥{price:,}."),
                 is_slash,
             )
 
-        # Deduct wallet
         try:
             await db.update_wallet(author.id, -price)
-        except ValueError as e:
-            return await _respond(ctx_or_interaction, Embeds.error(str(e)), is_slash)
+        except ValueError as exc:
+            return await _respond(ctx_or_interaction, UI.error(str(exc)), is_slash)
 
         await db.log_transaction(author.id, 0, price, "shop_purchase")
 
-        # ── Apply item effect ─────────────────────────────────────────────────
+        # Apply item effect
         if item["type"] == "server_upgrade":
             effect = item.get("effect") or ""
             try:
-                season = await db.get_active_season()
+                season    = await db.get_active_season()
                 season_id = int(season["season_id"]) if season else None
                 await db.apply_server_upgrade(guild.id, effect, season_id=season_id)
-            except ValueError as e:
-                # Refund if effect application fails
+            except ValueError as exc:
                 await db.update_wallet(author.id, price)
-                return await _respond(ctx_or_interaction, Embeds.error(str(e)), is_slash)
+                return await _respond(ctx_or_interaction, UI.error(str(exc)), is_slash)
 
             labels = {"tea_ai": "Tea AI", "cashback": "Weekly Cashback"}
             label  = labels.get(effect, effect)
@@ -168,7 +165,7 @@ class Shop(commands.Cog):
             if effect == "tea_ai":
                 seasons_left = await db.get_guild_tea_ai_seasons_remaining(guild.id)
                 desc = (
-                    f"AI-powered answer validation is now active in all Tea games on this server.\n"
+                    f"AI-powered answer validation is now active in all Tea games.\n"
                     f"> Expires in `{seasons_left}` season(s) — re-purchase to extend."
                 )
             elif effect == "cashback":
@@ -176,9 +173,7 @@ class Shop(commands.Cog):
             else:
                 desc = "Server upgrade applied."
 
-            embed = Embeds.success(
-                f"**{label}** unlocked for **{guild.name}**! 🎉\n> {desc}"
-            )
+            embed = UI.success(f"**{label}** unlocked for **{guild.name}**! 🎉\n> {desc}")
 
         elif item["type"] == "role" and item.get("role_id"):
             await db.add_to_inventory(author.id, item_id)
@@ -188,20 +183,29 @@ class Shop(commands.Cog):
                 if role and member:
                     await member.add_roles(role, reason="Denki shop purchase")
             except discord.Forbidden:
-                logger.warning(f"Missing permissions to assign role {item['role_id']} in guild {guild.id}")
-            except Exception as e:
-                logger.error(f"Role assignment error: {e}")
-            new_wallet = int(user_data["wallet"]) - price
-            embed = Embeds.purchase(item_name=str(item["name"]), price=price, wallet=new_wallet)
+                logger.warning(
+                    "Missing permissions to assign role %s in guild %d",
+                    item["role_id"], guild.id,
+                )
+            except Exception as exc:
+                logger.error("Role assignment error: %s", exc)
+            embed = UI.purchase(
+                item_name=str(item["name"]),
+                price=price,
+                wallet=int(user_data["wallet"]) - price,
+            )
 
         else:
             await db.add_to_inventory(author.id, item_id)
-            new_wallet = int(user_data["wallet"]) - price
-            embed = Embeds.purchase(item_name=str(item["name"]), price=price, wallet=new_wallet)
+            embed = UI.purchase(
+                item_name=str(item["name"]),
+                price=price,
+                wallet=int(user_data["wallet"]) - price,
+            )
 
         await _respond(ctx_or_interaction, embed, is_slash)
 
-    # /inventory
+    # ── /inventory ────────────────────────────────────────────────────────────
 
     @app_commands.command(name="inventory", description="View your inventory of owned items.")
     @app_commands.describe(user="User to check (defaults to you)")
@@ -220,15 +224,19 @@ class Shop(commands.Cog):
     ) -> None:
         await self._inventory(ctx, user=user, is_slash=False)
 
-    async def _inventory(self, ctx_or_interaction: Any, user: discord.Member | None, is_slash: bool) -> None:
+    async def _inventory(
+        self,
+        ctx_or_interaction: Any,
+        user: discord.Member | None,
+        is_slash: bool,
+    ) -> None:
         await _defer(ctx_or_interaction, is_slash)
         author = ctx_or_interaction.user if is_slash else ctx_or_interaction.author
         target = user or author
         items  = await db.get_inventory(target.id)
-        embed  = Embeds.inventory(user=target, items=items)
-        await _respond(ctx_or_interaction, embed, is_slash)
+        await _respond(ctx_or_interaction, UI.inventory(user=target, items=items), is_slash)
 
-    # /additem — admin only
+    # ── /additem ──────────────────────────────────────────────────────────────
 
     @app_commands.command(name="additem", description="Add an item to your server shop. Admin only.")
     @app_commands.describe(
@@ -236,7 +244,7 @@ class Shop(commands.Cog):
         price="Item price in ¥ Yen",
         item_type="Item type",
         description="Item description",
-        role="Discord role to assign (for role-type items)",
+        role="Discord role to assign (role-type items only)",
     )
     @app_commands.choices(item_type=[
         app_commands.Choice(name="Role", value="role"),
@@ -252,8 +260,11 @@ class Shop(commands.Cog):
         description: str = "",
         role: discord.Role | None = None,
     ) -> None:
-        await self._additem(interaction, name=name, price=price, item_type=item_type,
-                            description=description, role=role, is_slash=True)
+        await self._additem(
+            interaction,
+            name=name, price=price, item_type=item_type,
+            description=description, role=role, is_slash=True,
+        )
 
     @commands.command(name="additem")
     @commands.has_permissions(administrator=True)
@@ -265,8 +276,11 @@ class Shop(commands.Cog):
         item_type: str,
         description: str = "",
     ) -> None:
-        await self._additem(ctx, name=name, price=price, item_type=item_type,
-                            description=description, role=None, is_slash=False)
+        await self._additem(
+            ctx,
+            name=name, price=price, item_type=item_type,
+            description=description, role=None, is_slash=False,
+        )
 
     async def _additem(
         self,
@@ -279,33 +293,39 @@ class Shop(commands.Cog):
         is_slash: bool,
     ) -> None:
         await _defer(ctx_or_interaction, is_slash)
-        guild = ctx_or_interaction.guild
-
+        guild  = ctx_or_interaction.guild
         config = await db.get_or_create_guild_config(guild.id)
+
         if not config["shop_enabled"]:
             return await _respond(
                 ctx_or_interaction,
-                Embeds.error("Your server shop is not open yet. Use `/shopopen` first."),
+                UI.error("Your server shop is not open yet. Use `/shopopen` first."),
                 is_slash,
             )
-
         if price <= 0:
-            return await _respond(ctx_or_interaction, Embeds.error("Price must be greater than ¥0."), is_slash)
+            return await _respond(
+                ctx_or_interaction, UI.error("Price must be greater than ¥0."), is_slash
+            )
         if item_type not in ("role", "pet"):
-            return await _respond(ctx_or_interaction, Embeds.error("Item type must be `role` or `pet`."), is_slash)
+            return await _respond(
+                ctx_or_interaction, UI.error("Item type must be `role` or `pet`."), is_slash
+            )
 
-        role_id: int | None = role.id if role else None
         await db.create_shop_item(
             guild_id=guild.id,
             name=name,
             description=description,
             price=price,
             item_type=item_type,
-            role_id=role_id,
+            role_id=role.id if role else None,
         )
-        await _respond(ctx_or_interaction, Embeds.success(f"Item **{name}** added to the shop for ¥{price:,}."), is_slash)
+        await _respond(
+            ctx_or_interaction,
+            UI.success(f"Item **{name}** added to the shop for ¥{price:,}."),
+            is_slash,
+        )
 
-    # /removeitem — admin only
+    # ── /removeitem ───────────────────────────────────────────────────────────
 
     @app_commands.command(name="removeitem", description="Remove an item from the server shop. Admin only.")
     @app_commands.describe(item_id="Item ID to remove")
@@ -324,18 +344,33 @@ class Shop(commands.Cog):
         item  = await db.get_shop_item(item_id)
 
         if not item:
-            return await _respond(ctx_or_interaction, Embeds.error(f"Item `{item_id}` not found."), is_slash)
+            return await _respond(
+                ctx_or_interaction, UI.error(f"Item `{item_id}` not found."), is_slash
+            )
         if not item["guild_id"] or int(item["guild_id"]) != guild.id:
-            return await _respond(ctx_or_interaction, Embeds.error("You can only remove items from your own server shop."), is_slash)
+            return await _respond(
+                ctx_or_interaction,
+                UI.error("You can only remove items from your own server shop."),
+                is_slash,
+            )
         if not item["active"]:
-            return await _respond(ctx_or_interaction, Embeds.error("This item is already removed."), is_slash)
+            return await _respond(
+                ctx_or_interaction, UI.error("This item is already removed."), is_slash
+            )
 
         await db.disable_shop_item(item_id)
-        await _respond(ctx_or_interaction, Embeds.success(f"Item **{item['name']}** has been removed from the shop."), is_slash)
+        await _respond(
+            ctx_or_interaction,
+            UI.success(f"**{item['name']}** has been removed from the shop."),
+            is_slash,
+        )
 
-    # /shopopen — admin only
+    # ── /shopopen ─────────────────────────────────────────────────────────────
 
-    @app_commands.command(name="shopopen", description="Open your server shop. Costs ¥10,000 from the vault. Admin only.")
+    @app_commands.command(
+        name="shopopen",
+        description="Open your server shop. Costs ¥10,000 from the vault. Admin only.",
+    )
     @app_commands.checks.has_permissions(administrator=True)
     async def shopopen_slash(self, interaction: discord.Interaction) -> None:
         await self._shopopen(interaction, is_slash=True)
@@ -350,22 +385,32 @@ class Shop(commands.Cog):
         guild  = ctx_or_interaction.guild
         season = await db.get_active_season()
         if not season:
-            return await _respond(ctx_or_interaction, Embeds.error("There is no active season. The vault must have funds to open a shop."), is_slash)
+            return await _respond(
+                ctx_or_interaction,
+                UI.error("There is no active season. The vault must have funds to open a shop."),
+                is_slash,
+            )
 
-        season_id: int = int(season["season_id"])
         try:
-            await db.open_server_shop(guild.id, season_id)
-        except ValueError as e:
-            return await _respond(ctx_or_interaction, Embeds.error(str(e)), is_slash)
+            await db.open_server_shop(guild.id, int(season["season_id"]))
+        except ValueError as exc:
+            return await _respond(ctx_or_interaction, UI.error(str(exc)), is_slash)
 
-        await _respond(ctx_or_interaction, Embeds.success(
-            f"Your server shop is now open! ¥{db.SHOP_OPEN_COST:,} has been deducted from the vault.\n"
-            f"> Use `/additem` to add items."
-        ), is_slash)
+        await _respond(
+            ctx_or_interaction,
+            UI.success(
+                f"Your server shop is now open! ¥{db.SHOP_OPEN_COST:,} deducted from the vault.\n"
+                f"> Use `/additem` to start adding items."
+            ),
+            is_slash,
+        )
 
-    # /cashback
+    # ── /cashback ─────────────────────────────────────────────────────────────
 
-    @app_commands.command(name="cashback", description="View or claim your weekly 15% cashback on losses.")
+    @app_commands.command(
+        name="cashback",
+        description="View or claim your weekly 15% cashback on losses.",
+    )
     async def cashback_slash(self, interaction: discord.Interaction) -> None:
         await self._cashback(interaction, is_slash=True)
 
@@ -378,13 +423,12 @@ class Shop(commands.Cog):
         author = ctx_or_interaction.user if is_slash else ctx_or_interaction.author
         guild  = ctx_or_interaction.guild
 
-        # Check feature enabled for this server
         if not await db.get_guild_cashback(guild.id):
             return await _respond(
                 ctx_or_interaction,
-                Embeds.error(
+                UI.error(
                     "This server doesn't have **Weekly Cashback** unlocked.\n"
-                    f"> An admin can purchase it from the global shop for `¥50,000`."
+                    f"> An admin can purchase it from the global shop."
                 ),
                 is_slash,
             )
@@ -392,31 +436,29 @@ class Shop(commands.Cog):
         summary = await db.get_cashback_summary(author.id, guild.id)
 
         if summary["claimable"]:
-            # Attempt claim
             payout = await db.claim_cashback(author.id, guild.id)
             if payout:
                 user_data = await db.get_or_create_user(author.id)
-                embed = Embeds.base(
+                embed = UI.base(
                     f"> `💰` *Weekly Cashback claimed!*\n\n"
                     f"> Losses this week: `¥{summary['total_lost']:,}`\n"
                     f"> Cashback (15%): `¥{payout:,}`\n"
                     f"> New balance: `¥{int(user_data['wallet']):,}`"
                 )
             else:
-                embed = Embeds.error("Nothing to claim this week — no losses recorded.")
+                embed = UI.error("Nothing to claim this week — no losses recorded.")
         else:
-            # Show status
             claimed_line = (
-                f"> Already claimed this week: `¥{summary['paid_out']:,}`"
+                f"> Already claimed: `¥{summary['paid_out']:,}`"
                 if summary["claimed"]
-                else f"> Claimable amount: `¥{summary['payout']:,}` *(15% of losses)*"
+                else f"> Claimable (15%): `¥{summary['payout']:,}`"
             )
             window_line = (
-                "> Claim window: **Monday 12am–8am UTC**"
-                if not summary.get("in_window")
-                else "> ⏰ Claim window is **open right now!**"
+                "> ⏰ Claim window is **open right now!**"
+                if summary.get("in_window")
+                else "> Claim window: **Monday 12am–8am UTC**"
             )
-            embed = Embeds.base(
+            embed = UI.base(
                 f"> `💰` *Weekly Cashback — {guild.name}*\n\n"
                 f"> Losses this week: `¥{summary['total_lost']:,}`\n"
                 f"{claimed_line}\n"
@@ -425,15 +467,19 @@ class Shop(commands.Cog):
 
         await _respond(ctx_or_interaction, embed, is_slash)
 
-    # Error handlers
+    # ── Error handlers ────────────────────────────────────────────────────────
 
     @additem_slash.error
     @removeitem_slash.error
     @shopopen_slash.error
-    async def admin_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+    async def admin_error(
+        self,
+        interaction: discord.Interaction,
+        error: app_commands.AppCommandError,
+    ) -> None:
         if isinstance(error, app_commands.MissingPermissions):
             await interaction.response.send_message(
-                embed=Embeds.error("You need **Administrator** permission to use this command."),
+                embed=UI.error("You need **Administrator** permission to use this command."),
                 ephemeral=True,
             )
 
