@@ -19,7 +19,7 @@
 
 <br>
 
-[![Discord](https://img.shields.io/discord/YOUR_SERVER_ID?label=online&logo=discord&logoColor=white&color=5865F2&style=flat-square)](https://discord.gg/uuBQAqYykW)
+[![Discord](https://img.shields.io/discord/1474875467768008795?label=online&logo=discord&logoColor=white&color=5865F2&style=flat-square)](https://discord.gg/uuBQAqYykW)
 [![Python](https://img.shields.io/badge/python-3.14-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![discord.py](https://img.shields.io/badge/discord.py-2.x-5865F2?style=flat-square)](https://discordpy.readthedocs.io/)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
