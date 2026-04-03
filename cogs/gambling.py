@@ -20,41 +20,52 @@ COINFLIP_WIN_CHANCE = 0.49
 # ── Slots ─────────────────────────────────────────────────────────────────────
 
 SLOT_SYMBOLS: list[str] = ["🍒", "🍋", "🍊", "🍇", "💎", "7️⃣", "⚡"]
-SLOT_WEIGHTS: list[int] = [30,   25,   20,   15,    6,    3,    1]
+SLOT_WEIGHTS: list[int] = [30, 25, 20, 15, 6, 3, 1]
 
 SLOT_PAYOUTS: dict[str, float] = {
-    "⚡":  10.0,
-    "7️⃣":  8.0,
-    "💎":   5.0,
-    "🍇":   3.0,
-    "🍊":   2.5,
-    "🍋":   2.0,
-    "🍒":   1.5,
-    "two":  1.2,
+    "⚡": 10.0,
+    "7️⃣": 8.0,
+    "💎": 5.0,
+    "🍇": 3.0,
+    "🍊": 2.5,
+    "🍋": 2.0,
+    "🍒": 1.5,
+    "two": 1.2,
 }
 
 # ── Blackjack ─────────────────────────────────────────────────────────────────
 
 CARD_VALUES: dict[str, int] = {
-    "A": 11, "2": 2, "3": 3, "4": 4,  "5": 5,
-    "6":  6, "7": 7, "8": 8, "9": 9, "10": 10,
-    "J": 10, "Q": 10, "K": 10,
+    "A": 11,
+    "2": 2,
+    "3": 3,
+    "4": 4,
+    "5": 5,
+    "6": 6,
+    "7": 7,
+    "8": 8,
+    "9": 9,
+    "10": 10,
+    "J": 10,
+    "Q": 10,
+    "K": 10,
 }
-CARD_SUITS:       list[str] = ["♠", "♥", "♦", "♣"]
-BLACKJACK_PAYOUT: float     = 1.5
-DEALER_STAND:     int       = 17
+CARD_SUITS: list[str] = ["♠", "♥", "♦", "♣"]
+BLACKJACK_PAYOUT: float = 1.5
+DEALER_STAND: int = 17
 
 # ── Guess ─────────────────────────────────────────────────────────────────────
 
 GUESS_MODES: dict[str, dict[str, Any]] = {
-    "number_easy": {"label": "Number (1–10)",  "multiplier": 8,  "range": (1, 10)},
-    "number_hard": {"label": "Number (1–50)",  "multiplier": 30, "range": (1, 50)},
-    "letter":      {"label": "Letter (A–Z)",   "multiplier": 20, "range": None},
+    "number_easy": {"label": "Number (1–10)", "multiplier": 8, "range": (1, 10)},
+    "number_hard": {"label": "Number (1–50)", "multiplier": 30, "range": (1, 50)},
+    "letter": {"label": "Letter (A–Z)", "multiplier": 20, "range": None},
 }
 
 MIN_BET = 10
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
+
 
 async def _respond(
     ctx_or_interaction: Any,
@@ -70,17 +81,23 @@ async def _respond(
         if ctx_or_interaction.response.is_done():
             await ctx_or_interaction.followup.send(**kwargs, ephemeral=ephemeral)
         else:
-            await ctx_or_interaction.response.send_message(**kwargs, ephemeral=ephemeral)
+            await ctx_or_interaction.response.send_message(
+                **kwargs, ephemeral=ephemeral
+            )
     else:
         await ctx_or_interaction.reply(**kwargs)
 
 
-async def _defer(ctx_or_interaction: Any, is_slash: bool, ephemeral: bool = False) -> None:
+async def _defer(
+    ctx_or_interaction: Any, is_slash: bool, ephemeral: bool = False
+) -> None:
     if is_slash and not ctx_or_interaction.response.is_done():
         await ctx_or_interaction.response.defer(ephemeral=ephemeral)
 
 
-async def _maybe_record_cashback(guild_id: int | None, user_id: int, amount: int) -> None:
+async def _maybe_record_cashback(
+    guild_id: int | None, user_id: int, amount: int
+) -> None:
     """
     Record a gambling loss for cashback if the guild has the feature enabled.
     Silently ignores errors — cashback must never crash the gambling flow.
@@ -91,10 +108,13 @@ async def _maybe_record_cashback(guild_id: int | None, user_id: int, amount: int
         if await db.get_guild_cashback(guild_id):
             await db.record_loss_for_cashback(user_id, guild_id, amount)
     except Exception as exc:
-        logger.warning("_maybe_record_cashback(%d, %d, %d): %s", guild_id, user_id, amount, exc)
+        logger.warning(
+            "_maybe_record_cashback(%d, %d, %d): %s", guild_id, user_id, amount, exc
+        )
 
 
 # ── Blackjack helpers ─────────────────────────────────────────────────────────
+
 
 def _new_deck() -> list[str]:
     cards = [f"{v}{s}" for v in CARD_VALUES for s in CARD_SUITS]
@@ -108,10 +128,10 @@ def _card_value(card: str) -> int:
 
 def _hand_total(hand: list[str]) -> int:
     total = sum(_card_value(c) for c in hand)
-    aces  = sum(1 for c in hand if c.startswith("A"))
+    aces = sum(1 for c in hand if c.startswith("A"))
     while total > 21 and aces:
         total -= 10
-        aces  -= 1
+        aces -= 1
     return total
 
 
@@ -133,6 +153,7 @@ def _slot_result(reels: list[str]) -> tuple[bool, float]:
 
 # ── Blackjack view ────────────────────────────────────────────────────────────
 
+
 class BlackjackView(discord.ui.View):
     """Interactive Hit / Stand buttons for a live blackjack game."""
 
@@ -148,25 +169,28 @@ class BlackjackView(discord.ui.View):
         is_slash: bool,
     ) -> None:
         super().__init__(timeout=60)
-        self.player_id          = player_id
-        self.guild_id           = guild_id
-        self.deck               = deck
-        self.player_hand        = player_hand
-        self.dealer_hand        = dealer_hand
-        self.amount             = amount
+        self.player_id = player_id
+        self.guild_id = guild_id
+        self.deck = deck
+        self.player_hand = player_hand
+        self.dealer_hand = dealer_hand
+        self.amount = amount
         self.ctx_or_interaction = ctx_or_interaction
-        self.is_slash           = is_slash
-        self.finished           = False
+        self.is_slash = is_slash
+        self.finished = False
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.player_id:
             await interaction.response.send_message(
-                embed=UI.error("This isn't your game."), ephemeral=True
+                embed=UI.error(interaction.user, "This isn't your game."),
+                ephemeral=True,
             )
             return False
         return True
 
-    async def _finish(self, interaction: discord.Interaction, result: str, payout: int) -> None:
+    async def _finish(
+        self, interaction: discord.Interaction, result: str, payout: int
+    ) -> None:
         self.finished = True
         self.stop()
 
@@ -180,7 +204,11 @@ class BlackjackView(discord.ui.View):
             0 if payout >= 0 else self.player_id,
             self.player_id if payout >= 0 else 0,
             abs(payout) if payout != 0 else self.amount,
-            "gamble_win" if payout > 0 else ("gamble_loss" if payout < 0 else "gamble_push"),
+            (
+                "gamble_win"
+                if payout > 0
+                else ("gamble_loss" if payout < 0 else "gamble_push")
+            ),
         )
 
         if payout < 0:
@@ -201,7 +229,9 @@ class BlackjackView(discord.ui.View):
         )
 
     @discord.ui.button(label="Hit", style=discord.ButtonStyle.primary, emoji="🃏")
-    async def hit(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    async def hit(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
         self.player_hand.append(self.deck.pop())
         total = _hand_total(self.player_hand)
 
@@ -222,7 +252,9 @@ class BlackjackView(discord.ui.View):
         )
 
     @discord.ui.button(label="Stand", style=discord.ButtonStyle.secondary, emoji="🤚")
-    async def stand(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    async def stand(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
         await self._stand_logic(interaction)
 
     async def _stand_logic(self, interaction: discord.Interaction) -> None:
@@ -262,8 +294,8 @@ class BlackjackView(discord.ui.View):
             else:
                 result, payout = "Dealer wins! (timed out)", -self.amount
 
-            self.finished   = True
-            wallet_data     = await db.update_wallet(self.player_id, self.amount + payout)
+            self.finished = True
+            wallet_data = await db.update_wallet(self.player_id, self.amount + payout)
             await db.log_transaction(
                 0 if payout >= 0 else self.player_id,
                 self.player_id if payout >= 0 else 0,
@@ -294,6 +326,7 @@ class BlackjackView(discord.ui.View):
 
 # ── Guess views ───────────────────────────────────────────────────────────────
 
+
 class GuessView(discord.ui.View):
     """Launches the GuessModal when the player clicks the button."""
 
@@ -306,22 +339,25 @@ class GuessView(discord.ui.View):
         multiplier: int,
     ) -> None:
         super().__init__(timeout=60)
-        self.player_id  = player_id
-        self.guild_id   = guild_id
-        self.mode       = mode
-        self.amount     = amount
+        self.player_id = player_id
+        self.guild_id = guild_id
+        self.mode = mode
+        self.amount = amount
         self.multiplier = multiplier
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.player_id:
             await interaction.response.send_message(
-                embed=UI.error("This isn't your game."), ephemeral=True
+                embed=UI.error(interaction.user, "This isn't your game."),
+                ephemeral=True,
             )
             return False
         return True
 
     @discord.ui.button(label="Guess", style=discord.ButtonStyle.primary, emoji="🎲")
-    async def enter_guess(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    async def enter_guess(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
         await interaction.response.send_modal(
             GuessModal(
                 player_id=self.player_id,
@@ -351,36 +387,42 @@ class GuessModal(discord.ui.Modal, title="Enter your guess"):
         multiplier: int,
     ) -> None:
         super().__init__()
-        self.player_id  = player_id
-        self.guild_id   = guild_id
-        self.mode       = mode
-        self.amount     = amount
+        self.player_id = player_id
+        self.guild_id = guild_id
+        self.mode = mode
+        self.amount = amount
         self.multiplier = multiplier
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        cfg        = GUESS_MODES[self.mode]
+        cfg = GUESS_MODES[self.mode]
         user_guess = self.answer.value.strip().upper()
 
         if self.mode == "letter":
             if len(user_guess) != 1 or not user_guess.isalpha():
-                return await interaction.response.send_message(
-                    embed=UI.error("Please enter a single letter A–Z."), ephemeral=True
+                await interaction.response.send_message(
+                    embed=UI.error(
+                        interaction.user, "Please enter a single letter A–Z."
+                    ),
+                    ephemeral=True,
                 )
+                return
             correct = random.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
-            won     = user_guess == correct
+            won = user_guess == correct
         else:
-            rng: tuple[int, int] = cfg["range"] 
+            rng: tuple[int, int] = cfg["range"]
             try:
                 guess_int = int(user_guess)
             except ValueError:
-                return await interaction.response.send_message(
-                    embed=UI.error("Please enter a valid number."), ephemeral=True
+                await interaction.response.send_message(
+                    embed=UI.error(interaction.user, "Please enter a valid number."),
+                    ephemeral=True,
                 )
+                return
             correct_int = random.randint(rng[0], rng[1])
-            correct     = str(correct_int)
-            won         = guess_int == correct_int
+            correct = str(correct_int)
+            won = guess_int == correct_int
 
-        payout      = int(self.amount * self.multiplier) if won else -self.amount
+        payout = int(self.amount * self.multiplier) if won else -self.amount
         wallet_data = await db.update_wallet(self.player_id, payout)
         await db.log_transaction(
             0 if won else self.player_id,
@@ -406,6 +448,7 @@ class GuessModal(discord.ui.Modal, title="Enter your guess"):
 
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class Gambling(commands.Cog):
     """Gambling commands — coinflip, slots, blackjack, guess."""
 
@@ -414,22 +457,29 @@ class Gambling(commands.Cog):
 
     # ── /coinflip ─────────────────────────────────────────────────────────────
 
-    @app_commands.command(name="coinflip", description="Bet on a coin flip. 49% chance to double your bet.")
+    @app_commands.command(
+        name="coinflip",
+        description="Bet on a coin flip. 49% chance to double your bet.",
+    )
     @app_commands.describe(
         choice="heads or tails",
         amount="Amount to bet — enter a number or 'all' for your full balance",
     )
-    @app_commands.choices(choice=[
-        app_commands.Choice(name="Heads", value="heads"),
-        app_commands.Choice(name="Tails", value="tails"),
-    ])
+    @app_commands.choices(
+        choice=[
+            app_commands.Choice(name="Heads", value="heads"),
+            app_commands.Choice(name="Tails", value="tails"),
+        ]
+    )
     async def coinflip_slash(
         self,
         interaction: discord.Interaction,
         choice: str,
         amount: str,
     ) -> None:
-        await self._coinflip(interaction, choice=choice, amount_str=amount, is_slash=True)
+        await self._coinflip(
+            interaction, choice=choice, amount_str=amount, is_slash=True
+        )
 
     @commands.command(name="coinflip", aliases=["cf"])
     async def coinflip_prefix(
@@ -448,33 +498,45 @@ class Gambling(commands.Cog):
         is_slash: bool,
     ) -> None:
         await _defer(ctx_or_interaction, is_slash)
-        author   = ctx_or_interaction.user if is_slash else ctx_or_interaction.author
+        author = ctx_or_interaction.user if is_slash else ctx_or_interaction.author
         guild_id = ctx_or_interaction.guild.id if ctx_or_interaction.guild else None
 
         if choice.lower() not in ("heads", "tails"):
             return await _respond(
-                ctx_or_interaction, UI.error("Choose `heads` or `tails`."), is_slash
+                ctx_or_interaction,
+                UI.error(author, "Choose `heads` or `tails`."),
+                is_slash,
             )
 
         user_data = await db.get_or_create_user(author.id)
-        wallet    = int(user_data["wallet"])
-        amount    = parse_amount(amount_str, wallet)
+        wallet = int(user_data["wallet"])
+        amount = parse_amount(amount_str, wallet)
 
         if amount is None:
             return await _respond(
-                ctx_or_interaction, UI.error("Invalid amount. Use a number or `all`."), is_slash
+                ctx_or_interaction,
+                UI.error(author, "Invalid amount. Use a number or `all`."),
+                is_slash,
             )
         if amount < MIN_BET:
             return await _respond(
-                ctx_or_interaction, UI.error(f"Minimum bet is ¥{MIN_BET:,}."), is_slash
+                ctx_or_interaction,
+                UI.error(author, f"Minimum bet is ¥{MIN_BET:,}."),
+                is_slash,
             )
         if amount > wallet:
             return await _respond(
-                ctx_or_interaction, UI.error(f"Insufficient funds. Wallet: ¥{wallet:,}."), is_slash
+                ctx_or_interaction,
+                UI.error(author, f"Insufficient funds. Wallet: ¥{wallet:,}."),
+                is_slash,
             )
 
-        won    = random.random() < COINFLIP_WIN_CHANCE
-        result = choice.lower() if won else ("tails" if choice.lower() == "heads" else "heads")
+        won = random.random() < COINFLIP_WIN_CHANCE
+        result = (
+            choice.lower()
+            if won
+            else ("tails" if choice.lower() == "heads" else "heads")
+        )
         payout = amount if won else -amount
 
         wallet_data = await db.update_wallet(author.id, payout)
@@ -491,6 +553,7 @@ class Gambling(commands.Cog):
         await _respond(
             ctx_or_interaction,
             UI.coinflip(
+                user=author,
                 choice=choice.lower(),
                 result=result,
                 won=won,
@@ -503,7 +566,9 @@ class Gambling(commands.Cog):
     # ── /slots ────────────────────────────────────────────────────────────────
 
     @app_commands.command(name="slots", description="Spin a 3-reel slot machine.")
-    @app_commands.describe(amount="Amount to bet — enter a number or 'all' for your full balance")
+    @app_commands.describe(
+        amount="Amount to bet — enter a number or 'all' for your full balance"
+    )
     async def slots_slash(self, interaction: discord.Interaction, amount: str) -> None:
         await self._slots(interaction, amount_str=amount, is_slash=True)
 
@@ -511,31 +576,39 @@ class Gambling(commands.Cog):
     async def slots_prefix(self, ctx: commands.Context[Any], amount: str) -> None:
         await self._slots(ctx, amount_str=amount, is_slash=False)
 
-    async def _slots(self, ctx_or_interaction: Any, amount_str: str, is_slash: bool) -> None:
+    async def _slots(
+        self, ctx_or_interaction: Any, amount_str: str, is_slash: bool
+    ) -> None:
         await _defer(ctx_or_interaction, is_slash)
-        author   = ctx_or_interaction.user if is_slash else ctx_or_interaction.author
+        author = ctx_or_interaction.user if is_slash else ctx_or_interaction.author
         guild_id = ctx_or_interaction.guild.id if ctx_or_interaction.guild else None
 
         user_data = await db.get_or_create_user(author.id)
-        wallet    = int(user_data["wallet"])
-        amount    = parse_amount(amount_str, wallet)
+        wallet = int(user_data["wallet"])
+        amount = parse_amount(amount_str, wallet)
 
         if amount is None:
             return await _respond(
-                ctx_or_interaction, UI.error("Invalid amount. Use a number or `all`."), is_slash
+                ctx_or_interaction,
+                UI.error(author, "Invalid amount. Use a number or `all`."),
+                is_slash,
             )
         if amount < MIN_BET:
             return await _respond(
-                ctx_or_interaction, UI.error(f"Minimum bet is ¥{MIN_BET:,}."), is_slash
+                ctx_or_interaction,
+                UI.error(author, f"Minimum bet is ¥{MIN_BET:,}."),
+                is_slash,
             )
         if amount > wallet:
             return await _respond(
-                ctx_or_interaction, UI.error(f"Insufficient funds. Wallet: ¥{wallet:,}."), is_slash
+                ctx_or_interaction,
+                UI.error(author, f"Insufficient funds. Wallet: ¥{wallet:,}."),
+                is_slash,
             )
 
-        reels           = _spin_slots()
+        reels = _spin_slots()
         won, multiplier = _slot_result(reels)
-        payout          = int(amount * multiplier) if won else -amount
+        payout = int(amount * multiplier) if won else -amount
 
         wallet_data = await db.update_wallet(author.id, payout)
         await db.log_transaction(
@@ -551,6 +624,7 @@ class Gambling(commands.Cog):
         await _respond(
             ctx_or_interaction,
             UI.slots(
+                user=author,
                 reels=reels,
                 won=won,
                 multiplier=multiplier,
@@ -563,41 +637,55 @@ class Gambling(commands.Cog):
 
     # ── /blackjack ────────────────────────────────────────────────────────────
 
-    @app_commands.command(name="blackjack", description="Play blackjack against the dealer.")
-    @app_commands.describe(amount="Amount to bet — enter a number or 'all' for your full balance")
-    async def blackjack_slash(self, interaction: discord.Interaction, amount: str) -> None:
+    @app_commands.command(
+        name="blackjack", description="Play blackjack against the dealer."
+    )
+    @app_commands.describe(
+        amount="Amount to bet — enter a number or 'all' for your full balance"
+    )
+    async def blackjack_slash(
+        self, interaction: discord.Interaction, amount: str
+    ) -> None:
         await self._blackjack(interaction, amount_str=amount, is_slash=True)
 
     @commands.command(name="blackjack", aliases=["bj"])
     async def blackjack_prefix(self, ctx: commands.Context[Any], amount: str) -> None:
         await self._blackjack(ctx, amount_str=amount, is_slash=False)
 
-    async def _blackjack(self, ctx_or_interaction: Any, amount_str: str, is_slash: bool) -> None:
+    async def _blackjack(
+        self, ctx_or_interaction: Any, amount_str: str, is_slash: bool
+    ) -> None:
         await _defer(ctx_or_interaction, is_slash)
-        author   = ctx_or_interaction.user if is_slash else ctx_or_interaction.author
+        author = ctx_or_interaction.user if is_slash else ctx_or_interaction.author
         guild_id = ctx_or_interaction.guild.id if ctx_or_interaction.guild else None
 
         user_data = await db.get_or_create_user(author.id)
-        wallet    = int(user_data["wallet"])
-        amount    = parse_amount(amount_str, wallet)
+        wallet = int(user_data["wallet"])
+        amount = parse_amount(amount_str, wallet)
 
         if amount is None:
             return await _respond(
-                ctx_or_interaction, UI.error("Invalid amount. Use a number or `all`."), is_slash
+                ctx_or_interaction,
+                UI.error(author, "Invalid amount. Use a number or `all`."),
+                is_slash,
             )
         if amount < MIN_BET:
             return await _respond(
-                ctx_or_interaction, UI.error(f"Minimum bet is ¥{MIN_BET:,}."), is_slash
+                ctx_or_interaction,
+                UI.error(author, f"Minimum bet is ¥{MIN_BET:,}."),
+                is_slash,
             )
         if amount > wallet:
             return await _respond(
-                ctx_or_interaction, UI.error(f"Insufficient funds. Wallet: ¥{wallet:,}."), is_slash
+                ctx_or_interaction,
+                UI.error(author, f"Insufficient funds. Wallet: ¥{wallet:,}."),
+                is_slash,
             )
 
         # Deduct bet upfront — refunded or doubled on result
         await db.update_wallet(author.id, -amount)
 
-        deck        = _new_deck()
+        deck = _new_deck()
         player_hand = [deck.pop(), deck.pop()]
         dealer_hand = [deck.pop(), deck.pop()]
 
@@ -616,7 +704,11 @@ class Gambling(commands.Cog):
                 0 if payout >= 0 else author.id,
                 author.id if payout >= 0 else 0,
                 abs(payout) if payout != 0 else amount,
-                "gamble_win" if payout > 0 else ("gamble_push" if payout == 0 else "gamble_loss"),
+                (
+                    "gamble_win"
+                    if payout > 0
+                    else ("gamble_push" if payout == 0 else "gamble_loss")
+                ),
             )
             return await _respond(
                 ctx_or_interaction,
@@ -658,23 +750,29 @@ class Gambling(commands.Cog):
 
     # ── /guess ────────────────────────────────────────────────────────────────
 
-    @app_commands.command(name="guess", description="Guess a number or letter to win a multiplied payout.")
+    @app_commands.command(
+        name="guess", description="Guess a number or letter to win a multiplied payout."
+    )
     @app_commands.describe(
         mode="Game mode",
         amount="Amount to bet — enter a number or 'all' for your full balance",
     )
-    @app_commands.choices(mode=[
-        app_commands.Choice(name="Number (1–10)  •  8x",  value="number_easy"),
-        app_commands.Choice(name="Number (1–50)  •  30x", value="number_hard"),
-        app_commands.Choice(name="Letter (A–Z)   •  20x", value="letter"),
-    ])
+    @app_commands.choices(
+        mode=[
+            app_commands.Choice(name="Number (1–10)  •  8x", value="number_easy"),
+            app_commands.Choice(name="Number (1–50)  •  30x", value="number_hard"),
+            app_commands.Choice(name="Letter (A–Z)   •  20x", value="letter"),
+        ]
+    )
     async def guess_slash(
         self,
         interaction: discord.Interaction,
         mode: str,
         amount: str,
     ) -> None:
-        await self._guess_start(interaction, mode=mode, amount_str=amount, is_slash=True)
+        await self._guess_start(
+            interaction, mode=mode, amount_str=amount, is_slash=True
+        )
 
     @commands.command(name="guess", aliases=["g"])
     async def guess_prefix(
@@ -693,33 +791,41 @@ class Gambling(commands.Cog):
         is_slash: bool,
     ) -> None:
         await _defer(ctx_or_interaction, is_slash)
-        author   = ctx_or_interaction.user if is_slash else ctx_or_interaction.author
+        author = ctx_or_interaction.user if is_slash else ctx_or_interaction.author
         guild_id = ctx_or_interaction.guild.id if ctx_or_interaction.guild else None
 
         if mode not in GUESS_MODES:
             valid = ", ".join(f"`{k}`" for k in GUESS_MODES)
             return await _respond(
-                ctx_or_interaction, UI.error(f"Invalid mode. Choose: {valid}"), is_slash
+                ctx_or_interaction,
+                UI.error(author, f"Invalid mode. Choose: {valid}"),
+                is_slash,
             )
 
-        user_data  = await db.get_or_create_user(author.id)
-        wallet     = int(user_data["wallet"])
-        amount     = parse_amount(amount_str, wallet)
+        user_data = await db.get_or_create_user(author.id)
+        wallet = int(user_data["wallet"])
+        amount = parse_amount(amount_str, wallet)
 
         if amount is None:
             return await _respond(
-                ctx_or_interaction, UI.error("Invalid amount. Use a number or `all`."), is_slash
+                ctx_or_interaction,
+                UI.error(author, "Invalid amount. Use a number or `all`."),
+                is_slash,
             )
         if amount < MIN_BET:
             return await _respond(
-                ctx_or_interaction, UI.error(f"Minimum bet is ¥{MIN_BET:,}."), is_slash
+                ctx_or_interaction,
+                UI.error(author, f"Minimum bet is ¥{MIN_BET:,}."),
+                is_slash,
             )
         if amount > wallet:
             return await _respond(
-                ctx_or_interaction, UI.error(f"Insufficient funds. Wallet: ¥{wallet:,}."), is_slash
+                ctx_or_interaction,
+                UI.error(author, f"Insufficient funds. Wallet: ¥{wallet:,}."),
+                is_slash,
             )
 
-        cfg        = GUESS_MODES[mode]
+        cfg = GUESS_MODES[mode]
         multiplier = int(cfg["multiplier"])
 
         view = GuessView(
@@ -732,9 +838,10 @@ class Gambling(commands.Cog):
         await _respond(
             ctx_or_interaction,
             UI.info(
+                author,
                 f"**{cfg['label']}** — bet `¥{amount:,}`\n"
                 f"> Multiplier: `{multiplier}x`\n"
-                f"> Press **Guess** and type your answer!"
+                f"> Press **Guess** and type your answer!",
             ),
             is_slash,
             view=view,

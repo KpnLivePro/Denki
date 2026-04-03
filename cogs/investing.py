@@ -86,7 +86,7 @@ class Investing(commands.Cog):
         if amount < MIN_INVEST:
             return await _respond(
                 ctx_or_interaction,
-                UI.error(f"Minimum investment is ¥{MIN_INVEST:,}."),
+                UI.error(author, f"Minimum investment is ¥{MIN_INVEST:,}."),
                 is_slash,
             )
 
@@ -96,6 +96,7 @@ class Investing(commands.Cog):
             return await _respond(
                 ctx_or_interaction,
                 UI.error(
+                    author,
                     f"You must be a member of this server for **{MEMBER_MIN_DAYS} days** to invest.\n"
                     f"> You joined **{days_in_server}** days ago — `{days_needed}` day(s) remaining."
                 ),
@@ -106,7 +107,7 @@ class Investing(commands.Cog):
         if not season:
             return await _respond(
                 ctx_or_interaction,
-                UI.error("There is no active season right now. Investing is closed."),
+                UI.error(author, "There is no active season right now. Investing is closed."),
                 is_slash,
             )
 
@@ -118,7 +119,7 @@ class Investing(commands.Cog):
         if amount > wallet:
             return await _respond(
                 ctx_or_interaction,
-                UI.error(f"Insufficient funds. Wallet: ¥{wallet:,}."),
+                UI.error(author, f"Insufficient funds. Wallet: ¥{wallet:,}."),
                 is_slash,
             )
 
@@ -127,7 +128,7 @@ class Investing(commands.Cog):
         try:
             bank = await db.add_investment(author.id, guild.id, season_id, amount)
         except ValueError as exc:
-            return await _respond(ctx_or_interaction, UI.error(str(exc)), is_slash)
+            return await _respond(ctx_or_interaction, UI.error(author, str(exc)), is_slash)
 
         vault_total = await db.get_season_vault_total(guild.id, season_id)
         await db.log_transaction(author.id, 0, amount, "invest")
@@ -159,13 +160,14 @@ class Investing(commands.Cog):
 
     async def _vault(self, ctx_or_interaction: Any, is_slash: bool) -> None:
         await _defer(ctx_or_interaction, is_slash)
+        author = ctx_or_interaction.user if is_slash else ctx_or_interaction.author
         guild = ctx_or_interaction.guild
 
         season = await db.get_active_season()
         if not season:
             return await _respond(
                 ctx_or_interaction,
-                UI.error("There is no active season right now."),
+                UI.error(author, "There is no active season right now."),
                 is_slash,
             )
 

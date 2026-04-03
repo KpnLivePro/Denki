@@ -33,7 +33,7 @@ logger = logging.getLogger("denki.logz")
 
 def _record_to_embed(record: logging.LogRecord) -> discord.Embed:
     """Convert a stdlib LogRecord to a unified-style Denki embed."""
-    from embeds import get_color
+    from ui import get_color
 
     msg = record.getMessage()
     if record.exc_info:
@@ -404,8 +404,9 @@ class Logging(commands.Cog):
         self._webhook_url = None
         ok     = await self._ensure_webhook()
         status = "Webhook ready" if ok else "Webhook setup failed — check permissions"
-        from embeds import Embeds
-        await ctx.reply(embed=Embeds.success(
+        from ui import UI
+        await ctx.reply(embed=UI.success(
+            ctx.author,
             f"Log channel set to {channel.mention}.\n"
             f"> {status}\n"
             f"> Add `LOG_CHANNEL_ID={channel.id}` to your env to persist."
@@ -416,9 +417,10 @@ class Logging(commands.Cog):
         """Fire test records at every level. Owner only."""
         if not await self.bot.is_owner(ctx.author):
             return
-        from embeds import Embeds
+        from ui import UI
         if not self._webhook_url:
-            await ctx.reply(embed=Embeds.error(
+            await ctx.reply(embed=UI.error(
+                ctx.author,
                 "Webhook not initialised.\n"
                 "> Set `LOG_CHANNEL_ID` env var or use `!d setlog #channel`."
             ))
@@ -427,7 +429,8 @@ class Logging(commands.Cog):
         test_log.warning("logtest WARNING — test warning ⚠️")
         test_log.error("logtest ERROR — test error ❌")
         test_log.critical("logtest CRITICAL — test critical ‼️")
-        await ctx.reply(embed=Embeds.success(
+        await ctx.reply(embed=UI.success(
+            ctx.author,
             f"3 test records queued for <#{LOG_CHANNEL_ID}>.\n"
             f"> WARNING · ERROR · CRITICAL"
         ))
@@ -437,17 +440,20 @@ class Logging(commands.Cog):
         """Show current log channel and webhook status. Owner only."""
         if not await self.bot.is_owner(ctx.author):
             return
-        from embeds import Embeds
+        from ui import UI
         if LOG_CHANNEL_ID and self._webhook_url:
-            await ctx.reply(embed=Embeds.success(
+            await ctx.reply(embed=UI.success(
+                ctx.author,
                 f"Log channel: <#{LOG_CHANNEL_ID}>\n> Webhook: ✅ active"
             ))
         elif LOG_CHANNEL_ID:
-            await ctx.reply(embed=Embeds.error(
+            await ctx.reply(embed=UI.error(
+                ctx.author,
                 f"Channel ID `{LOG_CHANNEL_ID}` set but webhook not initialised."
             ))
         else:
-            await ctx.reply(embed=Embeds.error(
+            await ctx.reply(embed=UI.error(
+                ctx.author,
                 "No log channel set. Use `!d setlog #channel`."
             ))
 

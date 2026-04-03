@@ -6,7 +6,7 @@ import discord
 from discord.ext import commands
 
 import db
-from embeds import Embeds
+from ui import UI
 
 logger = logging.getLogger("denki.notifications")
 
@@ -17,10 +17,17 @@ async def notify_season_start(bot: commands.Bot, season: dict) -> None:
     Called by seasons.py after a new season is created.
     """
     try:
-        res = db.supabase.table("guildconfig").select("guild_id, notif_channel, notif_role").not_.is_("notif_channel", "null").execute()
+        res = (
+            db.supabase.table("guildconfig")
+            .select("guild_id, notif_channel, notif_role")
+            .not_.is_("notif_channel", "null")
+            .execute()
+        )
         configs = [dict(r) for r in (res.data or [])]  # type: ignore[arg-type]
     except Exception as e:
-        logger.error(f"Failed to fetch guild configs for season start notification: {e}")
+        logger.error(
+            f"Failed to fetch guild configs for season start notification: {e}"
+        )
         return
 
     for config in configs:
@@ -34,13 +41,19 @@ async def notify_season_start(bot: commands.Bot, season: dict) -> None:
                 continue
 
             # Build a fresh embed per guild so mutations don't bleed across guilds
-            embed = Embeds.season_start(season)
-            mention = f"<@&{config['notif_role']}>" if config.get("notif_role") else None
+            embed = UI.season_start(season)
+            mention = (
+                f"<@&{config['notif_role']}>" if config.get("notif_role") else None
+            )
             await channel.send(content=mention, embed=embed)
         except discord.Forbidden:
-            logger.warning(f"Missing permissions to send season start in guild {config.get('guild_id')}")
+            logger.warning(
+                f"Missing permissions to send season start in guild {config.get('guild_id')}"
+            )
         except Exception as e:
-            logger.error(f"Failed to send season start to guild {config.get('guild_id')}: {e}")
+            logger.error(
+                f"Failed to send season start to guild {config.get('guild_id')}: {e}"
+            )
 
 
 async def notify_vault_payout(
@@ -64,7 +77,7 @@ async def notify_vault_payout(
         if not channel or not isinstance(channel, discord.TextChannel):
             return
 
-        embed = Embeds.season_end(
+        embed = UI.season_end(
             season=season,
             top_investors=top_investors,
             name_map=name_map,
@@ -110,7 +123,7 @@ async def notify_tier_change(
                 f"> Win a season to start climbing again."
             )
 
-        embed = Embeds.base(message)
+        embed = UI.base(message)
         mention = f"<@&{config['notif_role']}>" if config.get("notif_role") else None
         await channel.send(content=mention, embed=embed)
 

@@ -6,7 +6,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from embeds import Embeds
+from ui import UI
 
 COMMAND_MAP: dict[str, list[dict]] = {
     "economy": [
@@ -92,7 +92,11 @@ COMMAND_MAP: dict[str, list[dict]] = {
             "aliases": ["!d guess", "!d g"],
             "usage": "/guess <mode> <amount>",
             "description": "Guess a number or letter to win a multiplied payout.",
-            "examples": ["/guess number_easy 500", "/guess letter 200", "!d g number_hard 100"],
+            "examples": [
+                "/guess number_easy 500",
+                "/guess letter 200",
+                "!d g number_hard 100",
+            ],
             "notes": "Number easy (1–10) = 8x  ·  Number hard (1–50) = 30x  ·  Letter (A–Z) = 20x",
         },
     ],
@@ -296,28 +300,47 @@ class Help(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    @app_commands.command(name="help", description="Learn about Denki or look up a command.")
+    @app_commands.command(
+        name="help", description="Learn about Denki or look up a command."
+    )
     @app_commands.describe(
         module="Browse all commands in a module",
         command="Look up a specific command by name",
     )
-    @app_commands.choices(module=[
-        app_commands.Choice(name="Economy    —  balance, daily, work, rob, pay, vote",     value="economy"),
-        app_commands.Choice(name="Gambling   —  coinflip, slots, blackjack, guess",        value="gambling"),
-        app_commands.Choice(name="Investing  —  invest, vault",                            value="investing"),
-        app_commands.Choice(name="Season     —  season info",                              value="season"),
-        app_commands.Choice(name="Shop       —  shop, buy, inventory, additem, removeitem", value="shop"),
-        app_commands.Choice(name="Leaderboard — server, investors, global, enrol",        value="leaderboard"),
-        app_commands.Choice(name="Admin      —  config, earnsettings, init",               value="admin"),
-        app_commands.Choice(name="Tea        —  word game",                                value="tea"),
-    ])
+    @app_commands.choices(
+        module=[
+            app_commands.Choice(
+                name="Economy    —  balance, daily, work, rob, pay, vote",
+                value="economy",
+            ),
+            app_commands.Choice(
+                name="Gambling   —  coinflip, slots, blackjack, guess", value="gambling"
+            ),
+            app_commands.Choice(name="Investing  —  invest, vault", value="investing"),
+            app_commands.Choice(name="Season     —  season info", value="season"),
+            app_commands.Choice(
+                name="Shop       —  shop, buy, inventory, additem, removeitem",
+                value="shop",
+            ),
+            app_commands.Choice(
+                name="Leaderboard — server, investors, global, enrol",
+                value="leaderboard",
+            ),
+            app_commands.Choice(
+                name="Admin      —  config, earnsettings, init", value="admin"
+            ),
+            app_commands.Choice(name="Tea        —  word game", value="tea"),
+        ]
+    )
     async def help_slash(
         self,
         interaction: discord.Interaction,
         module: Optional[str] = None,
         command: Optional[str] = None,
     ) -> None:
-        await self._send_help(interaction, module=module, command=command, is_slash=True)
+        await self._send_help(
+            interaction, module=module, command=command, is_slash=True
+        )
 
     @commands.command(name="help", aliases=["h"])
     async def help_prefix(
@@ -328,13 +351,23 @@ class Help(commands.Cog):
     ) -> None:
         await self._send_help(ctx, module=module, command=command, is_slash=False)
 
-    async def _send_help(self, ctx_or_interaction, module: Optional[str], command: Optional[str], is_slash: bool) -> None:
+    async def _send_help(
+        self,
+        ctx_or_interaction,
+        module: Optional[str],
+        command: Optional[str],
+        is_slash: bool,
+    ) -> None:
+        user = ctx_or_interaction.user if is_slash else ctx_or_interaction.author
         if command:
-            key   = command.lower()
-            match = _ALIAS_MAP.get(key) or next(((m, c) for k, (m, c) in _ALIAS_MAP.items() if key in k), None)
+            key = command.lower()
+            match = _ALIAS_MAP.get(key) or next(
+                ((m, c) for k, (m, c) in _ALIAS_MAP.items() if key in k), None
+            )
             if match:
                 _, cmd = match
-                embed  = Embeds.help_command(
+                embed = UI.help_command(
+                    user=user,
                     name=cmd["name"],
                     aliases=cmd.get("aliases", []),
                     usage=cmd["usage"],
@@ -343,15 +376,21 @@ class Help(commands.Cog):
                     notes=cmd.get("notes"),
                 )
             else:
-                embed = Embeds.error(f"Command `{command}` not found. Use `/help` to see all modules.")
+                embed = UI.error(
+                    user,
+                    f"Command `{command}` not found. Use `/help` to see all modules.",
+                )
         elif module:
             cmds = COMMAND_MAP.get(module.lower())
             if cmds:
-                embed = Embeds.help_module(module=module.lower(), commands=cmds)
+                embed = UI.help_module(user=user, module=module.lower(), commands=cmds)
             else:
-                embed = Embeds.error(f"Module `{module}` not found. Available: {', '.join(f'`{m}`' for m in COMMAND_MAP)}")
+                embed = UI.error(
+                    user,
+                    f"Module `{module}` not found. Available: {', '.join(f'`{m}`' for m in COMMAND_MAP)}",
+                )
         else:
-            embed = Embeds.help_home()
+            embed = UI.help_home(user=user)
 
         if is_slash:
             await ctx_or_interaction.response.send_message(embed=embed, ephemeral=True)

@@ -13,41 +13,61 @@ from discord import app_commands
 from discord.ext import commands
 
 import db
-from embeds import Embeds
+from ui import UI
 
 logger = logging.getLogger("denki.tea")
 
 # ── APIs ──────────────────────────────────────────────────────────────────────
 
-DATAMUSE_API   = "https://api.datamuse.com/words?sp={pattern}&max=100"
+DATAMUSE_API = "https://api.datamuse.com/words?sp={pattern}&max=100"
 DICTIONARY_API = "https://api.dictionaryapi.dev/api/v2/entries/en/{word}"
-GROQ_API_URL   = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL     = "llama-3.1-8b-instant"
-GROQ_API_KEY   = os.environ.get("GROQ_API_KEY", "")
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODEL = "llama-3.1-8b-instant"
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
 WORD_LENGTHS = [4, 5, 6, 7]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-MAX_PLAYERS        = 24
-MIN_PLAYERS        = 2
-LOBBY_TIMEOUT      = 300
-MAX_LIVES          = 3
-GREEN_ROUNDS       = 10
-MAX_ROUNDS         = 50
+MAX_PLAYERS = 24
+MIN_PLAYERS = 2
+LOBBY_TIMEOUT = 300
+MAX_LIVES = 3
+GREEN_ROUNDS = 10
+MAX_ROUNDS = 50
 MAX_FETCH_FAILURES = 3
 
-GREEN_POINTS_FIRST  = 10
+GREEN_POINTS_FIRST = 10
 GREEN_POINTS_SECOND = 7
-GREEN_POINTS_THIRD  = 5
-GREEN_POINTS_REST   = 2
+GREEN_POINTS_THIRD = 5
+GREEN_POINTS_REST = 2
 
 TEA_META = {
-    "black": {"emoji": "🍵", "color": "Black", "desc": "Contain all given letters in your word — last standing wins"},
-    "green": {"emoji": "🍃", "color": "Green", "desc": "Fastest valid answer each round scores points — top 3 win"},
-    "white": {"emoji": "🤍", "color": "White", "desc": "Fill in the missing letters — last standing wins"},
-    "red":   {"emoji": "🔴", "color": "Red",   "desc": "Unscramble the letters into any valid word — last standing wins"},
-    "blue":  {"emoji": "💙", "color": "Blue",  "desc": "Guess the word from an example sentence — last standing wins"},
+    "black": {
+        "emoji": "🍵",
+        "color": "Black",
+        "desc": "Contain all given letters in your word — last standing wins",
+    },
+    "green": {
+        "emoji": "🍃",
+        "color": "Green",
+        "desc": "Fastest valid answer each round scores points — top 3 win",
+    },
+    "white": {
+        "emoji": "🤍",
+        "color": "White",
+        "desc": "Fill in the missing letters — last standing wins",
+    },
+    "red": {
+        "emoji": "🔴",
+        "color": "Red",
+        "desc": "Unscramble the letters into any valid word — last standing wins",
+    },
+    "blue": {
+        "emoji": "💙",
+        "color": "Blue",
+        "desc": "Guess the word from an example sentence — last standing wins",
+    },
 }
 
 _active_games: dict[int, "TeaGame"] = {}
@@ -60,8 +80,11 @@ MAX_CACHE_SIZE = 1000
 
 # ── API helpers ───────────────────────────────────────────────────────────────
 
+
 async def fetch_random_word(length: int | None = None) -> str | None:
-    lengths_to_try = [length] if length else random.sample(WORD_LENGTHS, len(WORD_LENGTHS))
+    lengths_to_try = (
+        [length] if length else random.sample(WORD_LENGTHS, len(WORD_LENGTHS))
+    )
     for l in lengths_to_try:
         try:
             pattern = "?" * l
@@ -130,7 +153,10 @@ def make_fill(word: str) -> str:
 
 # ── AI validation (Groq) ──────────────────────────────────────────────────────
 
-async def ai_validate(tea_type: str, word: str, answer: str, challenge: str) -> bool | None:
+
+async def ai_validate(
+    tea_type: str, word: str, answer: str, challenge: str
+) -> bool | None:
     """
     Ask Groq to validate a player's answer.
     Returns True/False, or None if the call fails (signals caller to fall back to dictionary).
@@ -184,13 +210,13 @@ async def ai_validate(tea_type: str, word: str, answer: str, challenge: str) -> 
                 GROQ_API_URL,
                 headers={
                     "Authorization": f"Bearer {GROQ_API_KEY}",
-                    "Content-Type":  "application/json",
+                    "Content-Type": "application/json",
                 },
                 json={
                     "model": GROQ_MODEL,
                     "messages": [
                         {
-                            "role":    "system",
+                            "role": "system",
                             "content": (
                                 "You are a strict word game judge. "
                                 "Answer only YES or NO — no explanation, no punctuation."
@@ -198,20 +224,20 @@ async def ai_validate(tea_type: str, word: str, answer: str, challenge: str) -> 
                         },
                         {"role": "user", "content": prompt},
                     ],
-                    "max_tokens":  5,
+                    "max_tokens": 5,
                     "temperature": 0,
                 },
                 timeout=aiohttp.ClientTimeout(total=5),
             ) as r:
                 if r.status == 200:
-                    data   = await r.json()
-                    reply  = data["choices"][0]["message"]["content"].strip().upper()
+                    data = await r.json()
+                    reply = data["choices"][0]["message"]["content"].strip().upper()
                     result = reply.startswith("YES")
 
                     # Cache the result
                     if len(_validation_cache) >= MAX_CACHE_SIZE:
                         keys = list(_validation_cache.keys())
-                        for k in keys[:MAX_CACHE_SIZE // 5]:
+                        for k in keys[: MAX_CACHE_SIZE // 5]:
                             del _validation_cache[k]
                     _validation_cache[cache_key] = result
                     return result
@@ -224,15 +250,16 @@ async def ai_validate(tea_type: str, word: str, answer: str, challenge: str) -> 
 
 # ── Player ────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class TeaPlayer:
-    member:      discord.Member
-    bet:         int
-    lives:       int   = MAX_LIVES
-    points:      int   = 0
-    answered:    bool  = False
-    answer:      str   = ""
-    valid:       bool  = False
+    member: discord.Member
+    bet: int
+    lives: int = MAX_LIVES
+    points: int = 0
+    answered: bool = False
+    answer: str = ""
+    valid: bool = False
     answer_time: float = 0.0
 
     @property
@@ -250,6 +277,7 @@ class TeaPlayer:
 
 # ── Game ──────────────────────────────────────────────────────────────────────
 
+
 class TeaGame:
     def __init__(
         self,
@@ -261,21 +289,21 @@ class TeaGame:
         time_limit: int,
         use_ai: bool = False,
     ) -> None:
-        self.channel     = channel
-        self.host        = host
-        self.tea_type    = tea_type
-        self.min_bet     = min_bet
+        self.channel = channel
+        self.host = host
+        self.tea_type = tea_type
+        self.min_bet = min_bet
         self.max_players = max_players
-        self.time_limit  = time_limit
-        self.use_ai      = use_ai
-        self.players:    list[TeaPlayer] = []
-        self.used_words: set[str]        = set()
-        self.round       = 0
-        self.lobby_msg:  discord.Message | None = None
-        self.current_word              = ""
+        self.time_limit = time_limit
+        self.use_ai = use_ai
+        self.players: list[TeaPlayer] = []
+        self.used_words: set[str] = set()
+        self.round = 0
+        self.lobby_msg: discord.Message | None = None
+        self.current_word = ""
         self.current_challenge_letters: list[str] = []
-        self.started         = False
-        self.finished        = False
+        self.started = False
+        self.finished = False
         self._fetch_failures = 0
 
     @property
@@ -297,44 +325,49 @@ class TeaGame:
         ai_badge = "  •  `✨ AI`" if self.use_ai else ""
         player_lines = (
             "\n".join(f"> {p.member.display_name} — `¥{p.bet:,}`" for p in self.players)
-            if self.players else "> *No players yet — be the first to join!*"
+            if self.players
+            else "> *No players yet — be the first to join!*"
         )
-        embed = Embeds.base(
+        embed = UI.base(
             f"> `{m['emoji']}` *{m['color']} Tea — {m['desc']}*\n\n"
             f"> Min bet: `¥{self.min_bet:,}`  •  Players: `{len(self.players)}/{self.max_players}`"
-            f"  •  `{self.time_limit}s` per round{ai_badge}\n\n"
-            + player_lines
+            f"  •  `{self.time_limit}s` per round{ai_badge}\n\n" + player_lines
         )
-        embed.set_footer(text=f"Host: {self.host.display_name}  •  Starts when host clicks Start or {self.max_players} players join")
+        embed.set_footer(
+            text=f"Host: {self.host.display_name}  •  Starts when host clicks Start or {self.max_players} players join"
+        )
         return embed
 
     def round_embed(self, challenge: str, hint: str) -> discord.Embed:
-        m        = self.meta()
+        m = self.meta()
         is_green = self.tea_type == "green"
-        lines    = []
-        for p in (self.players if is_green else self.alive_players):
+        lines = []
+        for p in self.players if is_green else self.alive_players:
             status = "⌛" if not p.answered else ("✅" if p.valid else "❌")
             suffix = f"  {p.hearts}" if not is_green else f"  `{p.points}pts`"
             lines.append(f"> {status} {p.member.display_name}{suffix}")
         ai_footer = "  •  ✨ AI Validation" if self.use_ai else ""
-        embed = Embeds.base(
+        embed = UI.base(
             f"> `{m['emoji']}` *{m['color']} Tea — Round {self.round}*\n\n"
             f"> **{challenge}**\n"
-            f"> *{hint}*\n\n"
-            + "\n".join(lines)
+            f"> *{hint}*\n\n" + "\n".join(lines)
         )
-        embed.set_footer(text=f"Type your answer here  •  {self.time_limit}s  •  Pot: ¥{self.pot:,}{ai_footer}")
+        embed.set_footer(
+            text=f"Type your answer here  •  {self.time_limit}s  •  Pot: ¥{self.pot:,}{ai_footer}"
+        )
         return embed
 
-    def results_embed(self, results: list[tuple[TeaPlayer, bool, str]]) -> discord.Embed:
-        m     = self.meta()
+    def results_embed(
+        self, results: list[tuple[TeaPlayer, bool, str]]
+    ) -> discord.Embed:
+        m = self.meta()
         lines = []
         for p, valid, ans in results:
-            icon   = "✅" if valid else "❌"
-            shown  = f"`{ans}`" if ans else "*no answer*"
+            icon = "✅" if valid else "❌"
+            shown = f"`{ans}`" if ans else "*no answer*"
             suffix = p.hearts if self.tea_type != "green" else f"`{p.points}pts`"
             lines.append(f"> {icon} {p.member.display_name} — {shown}  {suffix}")
-        embed = Embeds.base(
+        embed = UI.base(
             f"> `{m['emoji']}` *Round {self.round} Results*\n\n"
             + "\n".join(lines)
             + f"\n\n> Answer: `{self.current_word}`"
@@ -345,31 +378,60 @@ class TeaGame:
 
 # ── Lobby UI ──────────────────────────────────────────────────────────────────
 
+
 class LobbyView(discord.ui.View):
     def __init__(self, game: TeaGame, bot: commands.Bot) -> None:
         super().__init__(timeout=LOBBY_TIMEOUT)
         self.game = game
-        self.bot  = bot
+        self.bot = bot
 
     @discord.ui.button(label="Join Game", style=discord.ButtonStyle.success, emoji="🍵")
-    async def join(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    async def join(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
         g = self.game
         if g.started:
-            return await interaction.response.send_message(embed=Embeds.error("Game already started."), ephemeral=True)
+            await interaction.response.send_message(
+                embed=UI.error(interaction.user, "Game already started."),
+                ephemeral=True,
+            )
+            return
         if len(g.players) >= g.max_players:
-            return await interaction.response.send_message(embed=Embeds.error("Game is full."), ephemeral=True)
+            await interaction.response.send_message(
+                embed=UI.error(interaction.user, "Game is full."), ephemeral=True
+            )
+            return
         if g.get_player(interaction.user.id):
-            return await interaction.response.send_message(embed=Embeds.error("You already joined."), ephemeral=True)
+            await interaction.response.send_message(
+                embed=UI.error(interaction.user, "You already joined."), ephemeral=True
+            )
+            return
         if interaction.user.id in _active_users:
-            return await interaction.response.send_message(embed=Embeds.error("You're already in an active game."), ephemeral=True)
+            await interaction.response.send_message(
+                embed=UI.error(interaction.user, "You're already in an active game."),
+                ephemeral=True,
+            )
+            return
         await interaction.response.send_modal(JoinModal(game=g, lobby_view=self))
 
     @discord.ui.button(label="Start Game", style=discord.ButtonStyle.primary, emoji="▶️")
-    async def start(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    async def start(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
         if interaction.user.id != self.game.host.id:
-            return await interaction.response.send_message(embed=Embeds.error("Only the host can start."), ephemeral=True)
+            await interaction.response.send_message(
+                embed=UI.error(interaction.user, "Only the host can start."),
+                ephemeral=True,
+            )
+            return
         if len(self.game.players) < MIN_PLAYERS:
-            return await interaction.response.send_message(embed=Embeds.error(f"Need at least {MIN_PLAYERS} players."), ephemeral=True)
+            await interaction.response.send_message(
+                embed=UI.error(
+                    interaction.user, f"Need at least {MIN_PLAYERS} players."
+                ),
+                ephemeral=True,
+            )
+            return
         await interaction.response.defer()
         self.stop()
         asyncio.create_task(run_game(self.game, self.bot))
@@ -380,44 +442,63 @@ class LobbyView(discord.ui.View):
 
 
 class JoinModal(discord.ui.Modal, title="Join Tea Game"):
-    bet_input = discord.ui.TextInput(label="Your bet (¥)", placeholder="e.g. 500", min_length=1, max_length=10)
+    bet_input = discord.ui.TextInput(
+        label="Your bet (¥)", placeholder="e.g. 500", min_length=1, max_length=10
+    )
 
     def __init__(self, game: TeaGame, lobby_view: LobbyView) -> None:
         super().__init__()
-        self.game       = game
+        self.game = game
         self.lobby_view = lobby_view
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         try:
             bet = int(self.bet_input.value.strip().replace(",", "").replace("¥", ""))
         except ValueError:
-            return await interaction.response.send_message(embed=Embeds.error("Invalid amount."), ephemeral=True)
+            await interaction.response.send_message(
+                embed=UI.error(interaction.user, "Invalid amount."), ephemeral=True
+            )
+            return
 
         if bet < self.game.min_bet:
-            return await interaction.response.send_message(
-                embed=Embeds.error(f"Minimum bet is ¥{self.game.min_bet:,}."), ephemeral=True
+            await interaction.response.send_message(
+                embed=UI.error(
+                    interaction.user, f"Minimum bet is ¥{self.game.min_bet:,}."
+                ),
+                ephemeral=True,
             )
+            return
 
         user_data = await db.get_or_create_user(interaction.user.id)
         if int(user_data["wallet"]) < bet:
-            return await interaction.response.send_message(
-                embed=Embeds.error(f"Insufficient funds. Wallet: ¥{int(user_data['wallet']):,}."), ephemeral=True
+            await interaction.response.send_message(
+                embed=UI.error(
+                    interaction.user,
+                    f"Insufficient funds. Wallet: ¥{int(user_data['wallet']):,}.",
+                ),
+                ephemeral=True,
             )
+            return
 
         await db.update_wallet(interaction.user.id, -bet)
 
-        guild  = interaction.guild
+        guild = interaction.guild
         member = (guild.get_member(interaction.user.id) if guild else None) or interaction.user  # type: ignore[arg-type]
         self.game.players.append(TeaPlayer(member=member, bet=bet))  # type: ignore[arg-type]
         _active_users[interaction.user.id] = self.game.channel.id
 
         if self.game.lobby_msg:
             try:
-                await self.game.lobby_msg.edit(embed=self.game.lobby_embed(), view=self.lobby_view)
+                await self.game.lobby_msg.edit(
+                    embed=self.game.lobby_embed(), view=self.lobby_view
+                )
             except discord.HTTPException:
                 pass
 
-        await interaction.response.send_message(embed=Embeds.success(f"Joined with bet ¥{bet:,}!"), ephemeral=True)
+        await interaction.response.send_message(
+            embed=UI.success(interaction.user, f"Joined with bet ¥{bet:,}!"),
+            ephemeral=True,
+        )
 
         if len(self.game.players) >= self.game.max_players:
             self.lobby_view.stop()
@@ -426,12 +507,13 @@ class JoinModal(discord.ui.Modal, title="Join Tea Game"):
 
 # ── Game runner ───────────────────────────────────────────────────────────────
 
+
 async def run_game(game: TeaGame, bot: commands.Bot) -> None:
     game.started = True
     if game.lobby_msg:
         try:
             await game.lobby_msg.edit(
-                embed=Embeds.base(
+                embed=UI.base(
                     f"> `{game.meta()['emoji']}` *{game.meta()['color']} Tea starting "
                     f"with {len(game.players)} players!*"
                     + ("  `✨ AI on`" if game.use_ai else "")
@@ -463,30 +545,39 @@ async def run_game(game: TeaGame, bot: commands.Bot) -> None:
 
         if not word:
             game._fetch_failures += 1
-            logger.error("tea: word fetch failed (consecutive=%d) game=%d type=%s",
-                         game._fetch_failures, game.channel.id, game.tea_type)
+            logger.error(
+                "tea: word fetch failed (consecutive=%d) game=%d type=%s",
+                game._fetch_failures,
+                game.channel.id,
+                game.tea_type,
+            )
             if game._fetch_failures >= MAX_FETCH_FAILURES:
-                await _cancel_game(game, "Word API unavailable — couldn't fetch words for 3 rounds in a row.")
+                await _cancel_game(
+                    game,
+                    "Word API unavailable — couldn't fetch words for 3 rounds in a row.",
+                )
                 return
             try:
-                await game.channel.send(embed=Embeds.error(
-                    f"Couldn't fetch a word — skipping round. "
-                    f"({game._fetch_failures}/{MAX_FETCH_FAILURES} before auto-cancel)"
-                ))
+                await game.channel.send(
+                    embed=UI.base(
+                        f"Couldn't fetch a word — skipping round. "
+                        f"({game._fetch_failures}/{MAX_FETCH_FAILURES} before auto-cancel)"
+                    )
+                )
             except discord.HTTPException:
                 pass
             await asyncio.sleep(2)
             continue
 
         game._fetch_failures = 0
-        game.current_word    = word
+        game.current_word = word
         game.used_words.add(word)
 
         # Reset answers
-        for p in (game.players if is_green else game.alive_players):
-            p.answered    = False
-            p.answer      = ""
-            p.valid       = False
+        for p in game.players if is_green else game.alive_players:
+            p.answered = False
+            p.answer = ""
+            p.valid = False
             p.answer_time = 0.0
 
         challenge, hint = await _build_challenge(game, word)
@@ -501,7 +592,7 @@ async def run_game(game: TeaGame, bot: commands.Bot) -> None:
             await _cancel_game(game, "Network error — bets refunded.")
             return
 
-        loop       = asyncio.get_running_loop()
+        loop = asyncio.get_running_loop()
         start_time = loop.time()
         await _collect_answers(game, bot, start_time)
 
@@ -522,9 +613,11 @@ async def run_game(game: TeaGame, bot: commands.Bot) -> None:
             if eliminated:
                 names = ", ".join(p.member.display_name for p in eliminated)
                 try:
-                    await game.channel.send(embed=Embeds.base(
-                        f"> `💀` *{names} {'has' if len(eliminated) == 1 else 'have'} been eliminated!*"
-                    ))
+                    await game.channel.send(
+                        embed=UI.base(
+                            f"> `💀` *{names} {'has' if len(eliminated) == 1 else 'have'} been eliminated!*"
+                        )
+                    )
                 except discord.HTTPException:
                     pass
 
@@ -563,7 +656,10 @@ async def _build_challenge(game: TeaGame, word: str) -> tuple[str, str]:
 
     elif game.tea_type == "red":
         game.current_challenge_letters = []
-        return scramble(word), f"Unscramble these letters into any valid word  •  {len(word)} letters"
+        return (
+            scramble(word),
+            f"Unscramble these letters into any valid word  •  {len(word)} letters",
+        )
 
     else:  # blue
         game.current_challenge_letters = []
@@ -576,24 +672,32 @@ async def _build_challenge(game: TeaGame, word: str) -> tuple[str, str]:
 
 
 async def _collect_answers(game: TeaGame, bot: commands.Bot, start_time: float) -> None:
-    is_green   = game.tea_type == "green"
-    target_set = {p.member.id for p in (game.players if is_green else game.alive_players)}
-    pending    = set(target_set)
+    is_green = game.tea_type == "green"
+    target_set = {
+        p.member.id for p in (game.players if is_green else game.alive_players)
+    }
+    pending = set(target_set)
 
     def check(msg: discord.Message) -> bool:
-        return msg.channel.id == game.channel.id and msg.author.id in target_set and not msg.author.bot
+        return (
+            msg.channel.id == game.channel.id
+            and msg.author.id in target_set
+            and not msg.author.bot
+        )
 
-    loop     = asyncio.get_running_loop()
+    loop = asyncio.get_running_loop()
     deadline = start_time + game.time_limit
 
     while pending and loop.time() < deadline:
         remaining = deadline - loop.time()
         try:
-            msg = await bot.wait_for("message", check=check, timeout=max(0.1, remaining))
+            msg = await bot.wait_for(
+                "message", check=check, timeout=max(0.1, remaining)
+            )
             player = game.get_player(msg.author.id)
             if player and not player.answered:
-                player.answered    = True
-                player.answer      = msg.content.strip().lower()
+                player.answered = True
+                player.answer = msg.content.strip().lower()
                 player.answer_time = loop.time() - start_time
                 pending.discard(msg.author.id)
                 try:
@@ -609,9 +713,9 @@ async def _score_round(
     word: str,
     is_green: bool,
 ) -> list[tuple[TeaPlayer, bool, str]]:
-    results:       list[tuple[TeaPlayer, bool, str]] = []
-    pool           = game.players if is_green else game.alive_players
-    challenge_str  = "  ".join(game.current_challenge_letters)
+    results: list[tuple[TeaPlayer, bool, str]] = []
+    pool = game.players if is_green else game.alive_players
+    challenge_str = "  ".join(game.current_challenge_letters)
 
     for player in pool:
         answer = player.answer.strip().lower()
@@ -629,8 +733,12 @@ async def _score_round(
             if not (all(l in answer for l in shown_letters) and len(answer) >= 3):
                 valid = False
             elif game.use_ai:
-                ai_result = await ai_validate(game.tea_type, word, answer, challenge_str)
-                valid = ai_result if ai_result is not None else await validate_word(answer)
+                ai_result = await ai_validate(
+                    game.tea_type, word, answer, challenge_str
+                )
+                valid = (
+                    ai_result if ai_result is not None else await validate_word(answer)
+                )
             else:
                 valid = await validate_word(answer)
 
@@ -639,7 +747,9 @@ async def _score_round(
                 valid = True
             elif game.use_ai:
                 # AI provides typo forgiveness for white/blue
-                ai_result = await ai_validate(game.tea_type, word, answer, challenge_str)
+                ai_result = await ai_validate(
+                    game.tea_type, word, answer, challenge_str
+                )
                 valid = ai_result if ai_result is not None else False
             else:
                 valid = False
@@ -648,8 +758,12 @@ async def _score_round(
             if not (sorted(answer) == sorted(word.lower())):
                 valid = False
             elif game.use_ai:
-                ai_result = await ai_validate(game.tea_type, word, answer, challenge_str)
-                valid = ai_result if ai_result is not None else await validate_word(answer)
+                ai_result = await ai_validate(
+                    game.tea_type, word, answer, challenge_str
+                )
+                valid = (
+                    ai_result if ai_result is not None else await validate_word(answer)
+                )
             else:
                 valid = await validate_word(answer)
 
@@ -674,7 +788,7 @@ async def _score_round(
 
 async def _end_game(game: TeaGame, is_green: bool) -> None:
     pot = game.pot
-    m   = game.meta()
+    m = game.meta()
 
     # Record losses for cashback if the guild has it enabled
     cashback_enabled = await db.get_guild_cashback(game.channel.guild.id)
@@ -687,7 +801,7 @@ async def _end_game(game: TeaGame, is_green: bool) -> None:
 
         winner = ranked[0]
         second = ranked[1] if len(ranked) > 1 else None
-        third  = ranked[2] if len(ranked) > 2 else None
+        third = ranked[2] if len(ranked) > 2 else None
 
         refunded: set[int] = set()
         if second:
@@ -706,15 +820,21 @@ async def _end_game(game: TeaGame, is_green: bool) -> None:
             if p.member.id != winner.member.id and p.member.id not in refunded:
                 await db.log_transaction(p.member.id, 0, p.bet, "greentea_loss")
                 if cashback_enabled:
-                    await db.record_loss_for_cashback(p.member.id, game.channel.guild.id, p.bet)
+                    await db.record_loss_for_cashback(
+                        p.member.id, game.channel.guild.id, p.bet
+                    )
 
-        lines  = []
+        lines = []
         medals = ["🥇", "🥈", "🥉"]
         for i, p in enumerate(ranked[:3]):
             note = f"wins `¥{pot:,}`" if i == 0 else f"bet refunded `¥{p.bet:,}`"
-            lines.append(f"> {medals[i]} **{p.member.display_name}** — `{p.points}pts`  •  {note}")
+            lines.append(
+                f"> {medals[i]} **{p.member.display_name}** — `{p.points}pts`  •  {note}"
+            )
 
-        embed = Embeds.base(f"> `{m['emoji']}` *Green Tea — Game Over!*\n\n" + "\n".join(lines))
+        embed = UI.base(
+            f"> `{m['emoji']}` *Green Tea — Game Over!*\n\n" + "\n".join(lines)
+        )
 
     else:
         alive = game.alive_players
@@ -730,8 +850,10 @@ async def _end_game(game: TeaGame, is_green: bool) -> None:
                 if p.member.id != winner.member.id:
                     await db.log_transaction(p.member.id, 0, p.bet, "tea_loss")
                     if cashback_enabled:
-                        await db.record_loss_for_cashback(p.member.id, game.channel.guild.id, p.bet)
-            embed = Embeds.base(
+                        await db.record_loss_for_cashback(
+                            p.member.id, game.channel.guild.id, p.bet
+                        )
+            embed = UI.base(
                 f"> `{m['emoji']}` *{m['color']} Tea — {winner.member.display_name} wins!*\n\n"
                 f"> Prize: `¥{pot:,}`  •  Rounds: `{game.round}`"
             )
@@ -743,8 +865,9 @@ async def _end_game(game: TeaGame, is_green: bool) -> None:
                 await db.update_wallet(p.member.id, share)
                 await db.log_transaction(0, p.member.id, share, "tea_win")
                 lines.append(f"> 🏆 {p.member.display_name} — `¥{share:,}`")
-            embed = Embeds.base(
-                f"> `{m['emoji']}` *{m['color']} Tea ends in a tie!*\n\n" + "\n".join(lines)
+            embed = UI.base(
+                f"> `{m['emoji']}` *{m['color']} Tea ends in a tie!*\n\n"
+                + "\n".join(lines)
             )
 
     game.finished = True
@@ -759,9 +882,11 @@ async def _refund_all(game: TeaGame) -> None:
     for p in game.players:
         await db.update_wallet(p.member.id, p.bet)
     try:
-        await game.channel.send(embed=Embeds.base(
-            f"> `{game.meta()['emoji']}` *Everyone was eliminated — all bets refunded.*"
-        ))
+        await game.channel.send(
+            embed=UI.base(
+                f"> `{game.meta()['emoji']}` *Everyone was eliminated — all bets refunded.*"
+            )
+        )
     except discord.HTTPException:
         pass
     await _cleanup(game)
@@ -771,9 +896,9 @@ async def _cancel_game(game: TeaGame, reason: str) -> None:
     for p in game.players:
         await db.update_wallet(p.member.id, p.bet)
     try:
-        await game.channel.send(embed=Embeds.base(
-            f"> `❌` *Tea cancelled — {reason} All bets refunded.*"
-        ))
+        await game.channel.send(
+            embed=UI.base(f"> `❌` *Tea cancelled — {reason} All bets refunded.*")
+        )
     except discord.HTTPException:
         pass
     await _cleanup(game)
@@ -787,26 +912,46 @@ async def _cleanup(game: TeaGame) -> None:
 
 # ── Cog ───────────────────────────────────────────────────────────────────────
 
+
 class Tea(commands.Cog):
     """Tea word games — black, green, white, red, blue."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    @app_commands.command(name="tea", description="Start a Tea word game in this channel.")
+    @app_commands.command(
+        name="tea", description="Start a Tea word game in this channel."
+    )
     @app_commands.describe(
         tea_type="Choose your tea — each type has different rules",
         min_bet="Minimum bet to join (¥ — minimum ¥10)",
         max_players="Maximum players (2–24)",
         time_limit="Seconds per round (10–60)",
     )
-    @app_commands.choices(tea_type=[
-        app_commands.Choice(name="🍵 Black Tea  — contain all letters, last standing wins",    value="black"),
-        app_commands.Choice(name="🍃 Green Tea  — fastest answer wins points, top 3 rewarded", value="green"),
-        app_commands.Choice(name="🤍 White Tea  — fill in the blanks, last standing wins",     value="white"),
-        app_commands.Choice(name="🔴 Red Tea    — unscramble letters, last standing wins",     value="red"),
-        app_commands.Choice(name="💙 Blue Tea   — guess from example, last standing wins",     value="blue"),
-    ])
+    @app_commands.choices(
+        tea_type=[
+            app_commands.Choice(
+                name="🍵 Black Tea  — contain all letters, last standing wins",
+                value="black",
+            ),
+            app_commands.Choice(
+                name="🍃 Green Tea  — fastest answer wins points, top 3 rewarded",
+                value="green",
+            ),
+            app_commands.Choice(
+                name="🤍 White Tea  — fill in the blanks, last standing wins",
+                value="white",
+            ),
+            app_commands.Choice(
+                name="🔴 Red Tea    — unscramble letters, last standing wins",
+                value="red",
+            ),
+            app_commands.Choice(
+                name="💙 Blue Tea   — guess from example, last standing wins",
+                value="blue",
+            ),
+        ]
+    )
     async def tea_slash(
         self,
         interaction: discord.Interaction,
@@ -815,33 +960,69 @@ class Tea(commands.Cog):
         max_players: int,
         time_limit: int,
     ) -> None:
-        if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
+        if not interaction.guild or not isinstance(
+            interaction.channel, discord.TextChannel
+        ):
             return
 
         if min_bet < 10:
-            return await interaction.response.send_message(embed=Embeds.error("Minimum bet must be at least ¥10."), ephemeral=True)
+            await interaction.response.send_message(
+                embed=UI.error(interaction.user, "Minimum bet must be at least ¥10."),
+                ephemeral=True,
+            )
+            return
         if not (MIN_PLAYERS <= max_players <= MAX_PLAYERS):
-            return await interaction.response.send_message(embed=Embeds.error(f"Max players must be {MIN_PLAYERS}–{MAX_PLAYERS}."), ephemeral=True)
+            await interaction.response.send_message(
+                embed=UI.error(
+                    interaction.user,
+                    f"Max players must be {MIN_PLAYERS}–{MAX_PLAYERS}.",
+                ),
+                ephemeral=True,
+            )
+            return
         if not (10 <= time_limit <= 60):
-            return await interaction.response.send_message(embed=Embeds.error("Time limit must be 10–60 seconds."), ephemeral=True)
+            await interaction.response.send_message(
+                embed=UI.error(interaction.user, "Time limit must be 10–60 seconds."),
+                ephemeral=True,
+            )
+            return
 
         if interaction.channel.id in _active_games:
-            return await interaction.response.send_message(embed=Embeds.error("There's already an active Tea game in this channel."), ephemeral=True)
+            await interaction.response.send_message(
+                embed=UI.error(
+                    interaction.user,
+                    "There's already an active Tea game in this channel.",
+                ),
+                ephemeral=True,
+            )
+            return
         if interaction.user.id in _active_users:
-            return await interaction.response.send_message(embed=Embeds.error("You're already in an active game."), ephemeral=True)
+            await interaction.response.send_message(
+                embed=UI.error(interaction.user, "You're already in an active game."),
+                ephemeral=True,
+            )
+            return
 
         member = interaction.guild.get_member(interaction.user.id)
         if not member:
             return
 
-        bot_member = interaction.guild.get_member(interaction.client.user.id) if interaction.client.user else None
+        bot_member = (
+            interaction.guild.get_member(interaction.client.user.id)
+            if interaction.client.user
+            else None
+        )
         if bot_member:
             perms = interaction.channel.permissions_for(bot_member)
             if not perms.send_messages or not perms.embed_links:
-                return await interaction.response.send_message(
-                    embed=Embeds.error("I need **Send Messages** and **Embed Links** permission in this channel."),
+                await interaction.response.send_message(
+                    embed=UI.error(
+                        interaction.user,
+                        "I need **Send Messages** and **Embed Links** permission in this channel.",
+                    ),
                     ephemeral=True,
                 )
+                return
 
         # Check premium AI flag for this guild
         use_ai = await db.get_guild_tea_ai(interaction.guild.id)

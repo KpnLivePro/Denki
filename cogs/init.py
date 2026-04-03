@@ -8,7 +8,18 @@ from discord import app_commands
 from discord.ext import commands
 
 import db
-from embeds import Embeds
+from ui import UI
+from emojis import (
+    E_GEAR,
+    E_SUCCESS,
+    E_ERROR,
+    E_INFO,
+    E_ANNOUNCE,
+    E_BELL,
+    E_SKIP,
+    E_CANCEL,
+    E_DONE,
+)
 
 logger = logging.getLogger("denki.init")
 
@@ -43,8 +54,9 @@ class InitWizard(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.admin.id:
             await interaction.response.send_message(
-                embed=Embeds.error(
-                    "Only the admin who ran `/init` can use this wizard."
+                embed=UI.error(
+                    interaction.user,
+                    "Only the admin who ran `/init` can use this wizard.",
                 ),
                 ephemeral=True,
             )
@@ -54,38 +66,38 @@ class InitWizard(discord.ui.View):
     # Step embeds
 
     def step1_embed(self) -> discord.Embed:
-        return Embeds.base(
-            "> `⚙️` *Denki Setup — Step 1 of 4*\n\n"
-            "> **Notification channel**\n"
-            "> Select the channel where Denki will send season announcements and vault payouts.\n"
-            "> Supports **text channels**, **announcement channels**, and **announcement threads**."
+        return UI.base(
+            f"> {E_GEAR} *Denki Setup — Step 1 of 4*\n\n"
+            f"> **Notification channel**\n"
+            f"> Select the channel where Denki will send season announcements and vault payouts.\n"
+            f"> Supports **text channels**, **announcement channels**, and **announcement threads**."
         )
 
     def step2_embed(self) -> discord.Embed:
         if self.notif_channel:
             ch_type = (
-                "📣 Announcement"
+                E_ANNOUNCE
                 if self.notif_channel.type
                 in (discord.ChannelType.news, discord.ChannelType.news_thread)
-                else "💬 Text"
+                else "💬"
             )
             channel_val = f"{self.notif_channel.mention} — *{ch_type}*"
         else:
             channel_val = "`Not set`"
-        return Embeds.base(
-            "> `⚙️` *Denki Setup — Step 2 of 4*\n\n"
-            "> **Notification role**\n"
-            "> Select a role to mention in announcements, or skip for no mention.\n\n"
+        return UI.base(
+            f"> {E_GEAR} *Denki Setup — Step 2 of 4*\n\n"
+            f"> **Notification role**\n"
+            f"> Select a role to mention in announcements, or skip for no mention.\n\n"
             f"> Channel: {channel_val}"
         )
 
     def step3_embed(self) -> discord.Embed:
         role_val = self.notif_role.mention if self.notif_role else "`No mention`"
-        return Embeds.base(
-            "> `⚙️` *Denki Setup — Step 3 of 4*\n\n"
-            "> **Earn commands**\n"
-            "> Select which commands to **disable** (up to 2).\n"
-            "> Click **Done** without selecting to keep all enabled.\n\n"
+        return UI.base(
+            f"> {E_GEAR} *Denki Setup — Step 3 of 4*\n\n"
+            f"> **Earn commands**\n"
+            f"> Select which commands to **disable** (up to 2).\n"
+            f"> Click **Done** without selecting to keep all enabled.\n\n"
             f"> Role: {role_val}"
         )
 
@@ -141,12 +153,14 @@ class InitWizard(discord.ui.View):
         work_val = "`Enabled`" if self.work_enabled else "`Disabled`"
         rob_val = "`Enabled`" if self.rob_enabled else "`Disabled`"
 
-        embed = Embeds.base(
-            "> `✅` *Denki Setup — Complete!*\n\n"
+        embed = UI.base(
+            f"> {E_SUCCESS} *Denki Setup — Complete!*\n\n"
             "> Your server is ready. Here's what was configured:"
         )
-        embed.add_field(name="`📢` Notif channel", value=channel_val, inline=True)
-        embed.add_field(name="`🔔` Notif role", value=role_val, inline=True)
+        embed.add_field(
+            name=f"{E_ANNOUNCE} Notif channel", value=channel_val, inline=True
+        )
+        embed.add_field(name=f"{E_BELL} Notif role", value=role_val, inline=True)
         embed.add_field(name="\u200b", value="\u200b", inline=True)
         embed.add_field(name="`📅` Daily", value=daily_val, inline=True)
         embed.add_field(name="`💼` Work", value=work_val, inline=True)
@@ -243,8 +257,9 @@ class EarnToggleSelect(discord.ui.Select):
             ]
         ):
             await interaction.response.send_message(
-                embed=Embeds.error(
-                    "You cannot disable all three earning methods. At least one must remain active."
+                embed=UI.error(
+                    interaction.user,
+                    "You cannot disable all three earning methods. At least one must remain active.",
                 ),
                 ephemeral=True,
             )
@@ -285,7 +300,7 @@ class EarnToggleSelect(discord.ui.Select):
 
 class DoneButton(discord.ui.Button):
     def __init__(self, wizard: InitWizard) -> None:
-        super().__init__(label="Done", style=discord.ButtonStyle.success, emoji="✅")
+        super().__init__(label="Done", style=discord.ButtonStyle.success, emoji=E_DONE)
         self.wizard = wizard
 
     async def callback(self, interaction: discord.Interaction) -> None:
@@ -297,7 +312,7 @@ class SkipButton(discord.ui.Button):
         super().__init__(
             label="Skip — no role mention",
             style=discord.ButtonStyle.secondary,
-            emoji="⏭️",
+            emoji=E_SKIP,
         )
         self.wizard = wizard
 
@@ -310,14 +325,17 @@ class SkipButton(discord.ui.Button):
 
 class CancelButton(discord.ui.Button):
     def __init__(self, wizard: InitWizard) -> None:
-        super().__init__(label="Cancel", style=discord.ButtonStyle.danger, emoji="❌")
+        super().__init__(
+            label="Cancel", style=discord.ButtonStyle.danger, emoji=E_CANCEL
+        )
         self.wizard = wizard
 
     async def callback(self, interaction: discord.Interaction) -> None:
         self.wizard.stop()
         await interaction.response.edit_message(
-            embed=Embeds.info(
-                "Setup cancelled. Run `/init` again whenever you're ready."
+            embed=UI.info(
+                interaction.user,
+                "Setup cancelled. Run `/init` again whenever you're ready.",
             ),
             view=None,
         )
@@ -358,8 +376,9 @@ class Init(commands.Cog):
     ) -> None:
         if isinstance(error, app_commands.MissingPermissions):
             await interaction.response.send_message(
-                embed=Embeds.error(
-                    "You need **Administrator** permission to run `/init`."
+                embed=UI.error(
+                    interaction.user,
+                    "You need **Administrator** permission to run `/init`.",
                 ),
                 ephemeral=True,
             )
