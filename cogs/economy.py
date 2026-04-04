@@ -92,16 +92,13 @@ async def _defer(
         await ctx_or_interaction.response.defer(ephemeral=ephemeral)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-
-
 class Economy(commands.Cog):
     """Core economy — balance, daily, work, rob, pay, vote."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    # ── /balance ──────────────────────────────────────────────────────────────
+    # ── /balance 
 
     @app_commands.command(
         name="balance", description="View your ¥ Yen wallet and server bank."

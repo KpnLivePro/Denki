@@ -5,8 +5,9 @@ Unified UI layer: embed factory, views, modals, pagination, and input converters
 Design rules
 ────────────
 • Every embed description opens with:
-      > `{emoji}` *{title}*
+      > `{emoji}` *{title}*      ← emoji is ALWAYS in backticks
   followed by a blank line and content. No exceptions.
+• The base UI.embed() enforces this: > `{emoji}` {user.mention} - *{response}*
 • Fields always come in multiples of 3 (Discord's grid is 3 columns).
   Pad with zero-width space fields when needed.
 • Monetary values always render as  ¥{n:,}  inside code blocks.
@@ -172,29 +173,29 @@ def _pad(embed: discord.Embed, n: int = 1) -> None:
 
 def _streak_label(streak: int) -> str:
     if streak >= 30:
-        return f"{E_STREAK} **30-day streak!**  `2x bonus`"
+        return f"`{E_STREAK}` **30-day streak!**  `2x bonus`"
     if streak >= 14:
-        return f"{E_STREAK} **14-day streak!**  `1.5x bonus`"
+        return f"`{E_STREAK}` **14-day streak!**  `1.5x bonus`"
     if streak >= 7:
-        return f"{E_STREAK} **7-day streak!**   `1.25x bonus`"
+        return f"`{E_STREAK}` **7-day streak!**   `1.25x bonus`"
     if streak >= 3:
-        return f"{E_STREAK} **3-day streak!**   `1.1x bonus`"
+        return f"`{E_STREAK}` **3-day streak!**   `1.1x bonus`"
     return ""
 
 
 def _next_milestone(streak: int) -> str:
     if streak < 3:
-        return f"`{3  - streak}` more for **1.1x**"
+        return f"`{3 - streak}` more for **1.1x**"
     if streak < 7:
-        return f"`{7  - streak}` more for **1.25x**"
+        return f"`{7 - streak}` more for **1.25x**"
     if streak < 14:
         return f"`{14 - streak}` more for **1.5x**"
     if streak < 30:
         return f"`{30 - streak}` more for **2x**"
-    return f"Max streak bonus! {E_SUCCESS}"
+    return f"Max streak bonus! `{E_SUCCESS}`"
 
 
-# ── EMBED ─────────────────────────────────────────────────────────────────────
+# ── EMBED FACTORY ─────────────────────────────────────────────────────────────
 
 
 class UI:
@@ -209,24 +210,24 @@ class UI:
         emoji: str, user: discord.User | discord.Member, response: str, **kwargs
     ) -> discord.Embed:
         """
-        Unified embed factory following the pattern:
-        > {emoji} {user.mention} - *{response}*
+        Unified embed factory. Enforces the Denki embed identity:
+            > `{emoji}` {user.mention} - *{response}*
+
+        The emoji is ALWAYS wrapped in backticks here — callers pass the
+        raw constant (e.g. E_SUCCESS) and the backticks are applied here.
         """
         e = discord.Embed(
-            description=f"> {emoji} {user.mention} - *{response}*",
+            description=f"> `{emoji}` {user.mention} - *{response}*",
             color=get_color(),
         )
 
-        # Add optional fields
         if "fields" in kwargs:
             for field in kwargs["fields"]:
                 e.add_field(**field)
 
-        # Add optional footer
         if "footer" in kwargs:
             e.set_footer(text=kwargs["footer"])
 
-        # Add optional thumbnail
         if "thumbnail" in kwargs:
             e.set_thumbnail(url=kwargs["thumbnail"])
 
@@ -267,7 +268,7 @@ class UI:
             else str(error)
         )
         return discord.Embed(
-            description=f"> {E_CRITICAL} {user.mention} - *Critical error:*\n```\n{tb[:1800]}\n```",
+            description=f"> `{E_CRITICAL}` {user.mention} - *Critical error:*\n```\n{tb[:1800]}\n```",
             color=get_color(),
         )
 
@@ -282,23 +283,13 @@ class UI:
         season_name: str,
     ) -> discord.Embed:
         e = discord.Embed(
-            description=f"> {E_USER} {user.mention} - *{user.display_name}'s balance*",
+            description=f"> `{E_USER}` {user.mention} - *{user.display_name}'s balance*",
             color=get_color(),
         )
         e.set_thumbnail(url=user.display_avatar.url)
-        e.add_field(
-            name=f"`{E_WALLET}` Pocket", value=f"```¥{wallet:,}```", inline=True
-        )
-        e.add_field(
-            name=f"`{E_BANK}` Server bank",
-            value=f"```¥{bank_balance:,}```",
-            inline=True,
-        )
-        e.add_field(
-            name=f"`{E_INVEST}` Invested",
-            value=f"```¥{bank_invested:,}```",
-            inline=True,
-        )
+        e.add_field(name=f"`{E_WALLET}` Pocket",      value=f"```¥{wallet:,}```",        inline=True)
+        e.add_field(name=f"`{E_BANK}` Server bank",   value=f"```¥{bank_balance:,}```",  inline=True)
+        e.add_field(name=f"`{E_INVEST}` Invested",    value=f"```¥{bank_invested:,}```", inline=True)
         e.set_footer(text=f"Season: {season_name}")
         return e
 
@@ -313,18 +304,10 @@ class UI:
         return UI.embed(
             E_DAILY,
             user,
-            f"Daily reward claimed!{tier_note}*",
+            f"Daily reward claimed!{tier_note}",
             fields=[
-                {
-                    "name": f"`{E_YEN}` Earned",
-                    "value": f"```¥{amount:,}```",
-                    "inline": True,
-                },
-                {
-                    "name": f"`{E_WALLET}` New balance",
-                    "value": f"```¥{wallet:,}```",
-                    "inline": True,
-                },
+                {"name": f"`{E_YEN}` Earned",         "value": f"```¥{amount:,}```", "inline": True},
+                {"name": f"`{E_WALLET}` New balance",  "value": f"```¥{wallet:,}```", "inline": True},
             ],
         )
 
@@ -338,18 +321,10 @@ class UI:
         return UI.embed(
             E_WORK,
             user,
-            f"You worked as a **{job}**!*",
+            f"You worked as a **{job}**!",
             fields=[
-                {
-                    "name": f"`{E_YEN}` Earned",
-                    "value": f"```¥{amount:,}```",
-                    "inline": True,
-                },
-                {
-                    "name": f"`{E_WALLET}` New balance",
-                    "value": f"```¥{wallet:,}```",
-                    "inline": True,
-                },
+                {"name": f"`{E_YEN}` Earned",         "value": f"```¥{amount:,}```", "inline": True},
+                {"name": f"`{E_WALLET}` New balance",  "value": f"```¥{wallet:,}```", "inline": True},
             ],
         )
 
@@ -406,14 +381,14 @@ class UI:
         user: discord.User | discord.Member, vote_url: str, current_streak: int = 0
     ) -> discord.Embed:
         streak_line = (
-            f"> {E_STREAK} Streak: `{current_streak}` day(s)  ·  {_next_milestone(current_streak)}\n"
+            f"> `{E_STREAK}` Streak: `{current_streak}` day(s)  ·  {_next_milestone(current_streak)}\n"
             if current_streak > 0
             else ""
         )
         return UI.embed(
             E_VOTE,
             user,
-            f"You haven't voted yet! [**Vote for Denki on top.gg**]({vote_url}) then run `/vote` again to claim your reward.\n\n{streak_line}> Base `¥2,000`  ·  Weekend `¥4,000`  ·  Streak bonuses apply\n> Cooldown: **12 hours**",
+            f"You haven't voted yet! [**Vote for Denki on top.gg**]({vote_url}) then run `/vote` again.\n\n{streak_line}> Base `¥2,000`  ·  Weekend `¥4,000`  ·  Streak bonuses apply\n> Cooldown: **12 hours**",
         )
 
     @staticmethod
@@ -434,20 +409,16 @@ class UI:
         streak: int,
         is_weekend: bool,
     ) -> discord.Embed:
-        weekend = f"  ·  `2x weekend!` {E_SUCCESS}" if is_weekend else ""
+        weekend = f"  ·  `2x weekend!` `{E_SUCCESS}`" if is_weekend else ""
         milestone = _streak_label(streak)
-        desc = f"Thanks for voting!{weekend}*"
+        response = f"Thanks for voting!{weekend}"
         if milestone:
-            desc += f"\n> {milestone}"
+            response += f"\n> {milestone}"
 
-        e = UI.embed(E_VOTE, user, desc, thumbnail=user.display_avatar.url)
-        e.add_field(name=f"`{E_YEN}` Reward", value=f"```¥{amount:,}```", inline=True)
-        e.add_field(
-            name=f"`{E_WALLET}` New balance", value=f"```¥{wallet:,}```", inline=True
-        )
-        e.add_field(
-            name=f"`{E_STREAK}` Streak", value=f"```{streak} day(s)```", inline=True
-        )
+        e = UI.embed(E_VOTE, user, response, thumbnail=user.display_avatar.url)
+        e.add_field(name=f"`{E_YEN}` Reward",         value=f"```¥{amount:,}```",      inline=True)
+        e.add_field(name=f"`{E_WALLET}` New balance",  value=f"```¥{wallet:,}```",      inline=True)
+        e.add_field(name=f"`{E_STREAK}` Streak",       value=f"```{streak} day(s)```",  inline=True)
         e.set_footer(text=f"{_next_milestone(streak)}  ·  Vote again in 12h")
         return e
 
@@ -462,18 +433,12 @@ class UI:
         amount: int,
         wallet: int,
     ) -> discord.Embed:
-        outcome = f"You won!" if won else f"You lost!"
-        e = UI.embed(
-            E_COIN,
-            user,
-            f"Coinflip — {outcome}*",
-        )
-        e.add_field(name=f"`{E_DICE}` Your call", value=f"```{choice}```", inline=True)
-        e.add_field(name=f"`{E_COIN}` Result", value=f"```{result}```", inline=True)
-        e.add_field(name=f"`{E_YEN}` Bet", value=f"```¥{amount:,}```", inline=True)
-        e.add_field(
-            name=f"`{E_WALLET}` New balance", value=f"```¥{wallet:,}```", inline=True
-        )
+        outcome = "You won!" if won else "You lost!"
+        e = UI.embed(E_COIN, user, f"Coinflip — {outcome}")
+        e.add_field(name=f"`{E_DICE}` Your call",      value=f"```{choice}```",    inline=True)
+        e.add_field(name=f"`{E_COIN}` Result",          value=f"```{result}```",    inline=True)
+        e.add_field(name=f"`{E_YEN}` Bet",              value=f"```¥{amount:,}```", inline=True)
+        e.add_field(name=f"`{E_WALLET}` New balance",   value=f"```¥{wallet:,}```", inline=True)
         _pad(e, 2)
         return e
 
@@ -487,25 +452,15 @@ class UI:
         payout: int,
         wallet: int,
     ) -> discord.Embed:
-        outcome = f"You won `¥{payout:,}`!" if won else f"No match — lost!"
-        e = UI.embed(
-            E_SLOTS,
-            user,
-            f"Slots — {outcome}*",
-        )
-        e.add_field(
-            name=f"`{E_SLOTS}` Reels", value=f"```{'  '.join(reels)}```", inline=False
-        )
-        e.add_field(name=f"`{E_YEN}` Bet", value=f"```¥{amount:,}```", inline=True)
+        outcome = f"You won `¥{payout:,}`!" if won else "No match — lost!"
+        e = UI.embed(E_SLOTS, user, f"Slots — {outcome}")
+        e.add_field(name=f"`{E_SLOTS}` Reels",         value=f"```{'  '.join(reels)}```", inline=False)
+        e.add_field(name=f"`{E_YEN}` Bet",              value=f"```¥{amount:,}```",         inline=True)
         if won:
-            e.add_field(
-                name="`✖️` Multiplier", value=f"```{multiplier}x```", inline=True
-            )
+            e.add_field(name=f"`{E_STATS}` Multiplier", value=f"```{multiplier}x```",      inline=True)
         else:
             _pad(e)
-        e.add_field(
-            name=f"`{E_WALLET}` New balance", value=f"```¥{wallet:,}```", inline=True
-        )
+        e.add_field(name=f"`{E_WALLET}` New balance",   value=f"```¥{wallet:,}```",         inline=True)
         return e
 
     @staticmethod
@@ -519,17 +474,9 @@ class UI:
             description=f"> `{E_CARDS}` *Blackjack — your turn*",
             color=get_color(),
         )
-        e.add_field(
-            name=f"`{E_USER}` Your hand  ({player_total})",
-            value=f"```{'  '.join(player_hand)}```",
-            inline=False,
-        )
-        e.add_field(
-            name=f"`{E_BOT}` Dealer shows",
-            value=f"```{dealer_card}  🂠```",
-            inline=True,
-        )
-        e.add_field(name=f"`{E_YEN}` Bet", value=f"```¥{amount:,}```", inline=True)
+        e.add_field(name=f"`{E_USER}` Your hand  ({player_total})", value=f"```{'  '.join(player_hand)}```", inline=False)
+        e.add_field(name=f"`{E_BOT}` Dealer shows",                  value=f"```{dealer_card}  🂠```",       inline=True)
+        e.add_field(name=f"`{E_YEN}` Bet",                           value=f"```¥{amount:,}```",             inline=True)
         _pad(e)
         e.set_footer(text="Hit to draw  ·  Stand to end your turn")
         return e
@@ -549,25 +496,16 @@ class UI:
             description=f"> `{E_CARDS}` *Blackjack — `{result}`*",
             color=get_color(),
         )
-        e.add_field(
-            name=f"`{E_USER}` Your hand  ({player_total})",
-            value=f"```{'  '.join(player_hand)}```",
-            inline=False,
-        )
-        e.add_field(
-            name=f"`{E_BOT}` Dealer  ({dealer_total})",
-            value=f"```{'  '.join(dealer_hand)}```",
-            inline=False,
-        )
-        e.add_field(name=f"`{E_YEN}` Bet", value=f"```¥{amount:,}```", inline=True)
-        e.add_field(name=f"`{E_POT}` Payout", value=f"```¥{payout:,}```", inline=True)
-        e.add_field(
-            name=f"`{E_WALLET}` New balance", value=f"```¥{wallet:,}```", inline=True
-        )
+        e.add_field(name=f"`{E_USER}` Your hand  ({player_total})", value=f"```{'  '.join(player_hand)}```", inline=False)
+        e.add_field(name=f"`{E_BOT}` Dealer  ({dealer_total})",      value=f"```{'  '.join(dealer_hand)}```", inline=False)
+        e.add_field(name=f"`{E_YEN}` Bet",           value=f"```¥{amount:,}```", inline=True)
+        e.add_field(name=f"`{E_POT}` Payout",        value=f"```¥{payout:,}```", inline=True)
+        e.add_field(name=f"`{E_WALLET}` New balance", value=f"```¥{wallet:,}```", inline=True)
         return e
 
     @staticmethod
     def guess(
+        user: discord.User | discord.Member,
         mode: str,
         answer: str,
         won: bool,
@@ -575,19 +513,10 @@ class UI:
         payout: int,
         wallet: int,
     ) -> discord.Embed:
-        outcome = (
-            f"`{E_SUCCESS}` *Correct — won `¥{payout:,}`!*"
-            if won
-            else f"`{E_ERROR}` *Wrong — answer was `{answer}`*"
-        )
-        e = discord.Embed(
-            description=f"> `{E_DICE}` *Guess ({mode}) — {outcome}*",
-            color=get_color(),
-        )
-        e.add_field(name=f"`{E_YEN}` Bet", value=f"```¥{amount:,}```", inline=True)
-        e.add_field(
-            name=f"`{E_WALLET}` New balance", value=f"```¥{wallet:,}```", inline=True
-        )
+        outcome = f"Correct — won `¥{payout:,}`!" if won else f"Wrong — answer was `{answer}`"
+        e = UI.embed(E_DICE, user, f"Guess ({mode}) — {outcome}")
+        e.add_field(name=f"`{E_YEN}` Bet",           value=f"```¥{amount:,}```", inline=True)
+        e.add_field(name=f"`{E_WALLET}` New balance", value=f"```¥{wallet:,}```", inline=True)
         _pad(e)
         return e
 
@@ -606,17 +535,9 @@ class UI:
             color=get_color(),
         )
         e.set_thumbnail(url=user.display_avatar.url)
-        e.add_field(name=f"`{E_YEN}` Invested", value=f"```¥{amount:,}```", inline=True)
-        e.add_field(
-            name=f"`{E_STATS}` Your total",
-            value=f"```¥{total_invested:,}```",
-            inline=True,
-        )
-        e.add_field(
-            name=f"`{E_VAULT}` Vault total",
-            value=f"```¥{vault_total:,}```",
-            inline=True,
-        )
+        e.add_field(name=f"`{E_YEN}` Invested",       value=f"```¥{amount:,}```",         inline=True)
+        e.add_field(name=f"`{E_STATS}` Your total",   value=f"```¥{total_invested:,}```", inline=True)
+        e.add_field(name=f"`{E_VAULT}` Vault total",  value=f"```¥{vault_total:,}```",    inline=True)
         e.set_footer(text=f"Season: {season_name}  ·  Locked until season ends")
         return e
 
@@ -632,23 +553,15 @@ class UI:
             description=f"> `{E_VAULT}` *{guild_name} — Season Vault*",
             color=get_color(),
         )
-        e.add_field(
-            name=f"`{E_POT}` Total pooled", value=f"```¥{vault_total:,}```", inline=True
-        )
-        e.add_field(
-            name=f"`{E_CALENDAR}` Days left",
-            value=f"```{days_remaining}```",
-            inline=True,
-        )
+        e.add_field(name=f"`{E_POT}` Total pooled",   value=f"```¥{vault_total:,}```", inline=True)
+        e.add_field(name=f"`{E_CALENDAR}` Days left", value=f"```{days_remaining}```",  inline=True)
         _pad(e)
         lines = []
         for i, row in enumerate(top_investors):
             medal = MEDALS[i] if i < len(MEDALS) else f"`#{i+1}`"
             lines.append(f"{medal} <@{row['user_id']}> — `¥{int(row['invested']):,}`")
         if lines:
-            e.add_field(
-                name=f"`{E_TROPHY}` Top investors", value="\n".join(lines), inline=False
-            )
+            e.add_field(name=f"`{E_TROPHY}` Top investors", value="\n".join(lines), inline=False)
         e.set_footer(text=f"Season: {season_name}")
         return e
 
@@ -659,24 +572,14 @@ class UI:
         end = datetime.fromisoformat(season["end"])
         if end.tzinfo is None:
             end = end.replace(tzinfo=timezone.utc)
-        days_left = max(
-            0, math.ceil((end - datetime.now(timezone.utc)).total_seconds() / 86400)
-        )
+        days_left = max(0, math.ceil((end - datetime.now(timezone.utc)).total_seconds() / 86400))
         e = discord.Embed(
             description=f"> `{E_SEASON}` *Season: **{season['name']}***",
             color=get_color(),
         )
-        e.add_field(
-            name=f"`{E_CALENDAR}` Days left", value=f"```{days_left}```", inline=True
-        )
-        e.add_field(
-            name=f"`{E_VAULT}` Vault total",
-            value=f"```¥{vault_total:,}```",
-            inline=True,
-        )
-        e.add_field(
-            name=f"`{E_ENDS}` Ends", value=f"<t:{int(end.timestamp())}:F>", inline=True
-        )
+        e.add_field(name=f"`{E_CALENDAR}` Days left", value=f"```{days_left}```",            inline=True)
+        e.add_field(name=f"`{E_VAULT}` Vault total",  value=f"```¥{vault_total:,}```",       inline=True)
+        e.add_field(name=f"`{E_ENDS}` Ends",          value=f"<t:{int(end.timestamp())}:F>", inline=True)
         return e
 
     @staticmethod
@@ -688,11 +591,7 @@ class UI:
             description=f"> `{E_SEASON}` *A new season has begun — **{season['name']}***",
             color=get_color(),
         )
-        e.add_field(
-            name=f"`{E_ENDS}` Ends",
-            value=f"<t:{int(end_raw.timestamp())}:F>",
-            inline=True,
-        )
+        e.add_field(name=f"`{E_ENDS}` Ends", value=f"<t:{int(end_raw.timestamp())}:F>", inline=True)
         e.set_footer(text="Invest in the vault to compete for season bonuses.")
         return e
 
@@ -717,11 +616,7 @@ class UI:
             color=get_color(),
         )
         if lines:
-            e.add_field(
-                name=f"`{E_TROPHY}` Top 3 investors",
-                value="\n".join(lines),
-                inline=False,
-            )
+            e.add_field(name=f"`{E_TROPHY}` Top 3 investors", value="\n".join(lines), inline=False)
         e.set_footer(text="Bonuses paid to wallets  ·  New season starting shortly.")
         return e
 
@@ -739,30 +634,20 @@ class UI:
         )
 
         def _item_line(item: dict) -> str:
-            desc = item.get("description") or "No description"
+            desc  = item.get("description") or "No description"
             itype = item.get("type", "")
-            icon = E_ROLE_ITEM if itype == "role" else E_ITEM
+            icon  = E_ROLE_ITEM if itype == "role" else E_ITEM
             return (
                 f"`{icon}` **{item['name']}** — `¥{int(item['price']):,}`\n"
                 f"> *{desc}*  ·  ID `{item['item_id']}`"
             )
 
         if server_items:
-            e.add_field(
-                name=f"`{E_GUILD}` Server items",
-                value="\n".join(_item_line(i) for i in server_items),
-                inline=False,
-            )
+            e.add_field(name=f"`{E_GUILD}` Server items",  value="\n".join(_item_line(i) for i in server_items), inline=False)
         if global_items:
-            e.add_field(
-                name=f"`{E_GLOBAL}` Global items",
-                value="\n".join(_item_line(i) for i in global_items),
-                inline=False,
-            )
+            e.add_field(name=f"`{E_GLOBAL}` Global items", value="\n".join(_item_line(i) for i in global_items), inline=False)
         if not server_items and not global_items:
-            e.add_field(
-                name="Empty", value="> *No items available right now.*", inline=False
-            )
+            e.add_field(name="Empty", value="> *No items available right now.*", inline=False)
 
         e.set_footer(text="Use /buy <item_id> to purchase")
         return e
@@ -773,11 +658,9 @@ class UI:
             description=f"> `{E_BUY}` *Purchase successful!*",
             color=get_color(),
         )
-        e.add_field(name=f"`{E_ITEM}` Item", value=f"```{item_name}```", inline=True)
-        e.add_field(name=f"`{E_PAY}` Paid", value=f"```¥{price:,}```", inline=True)
-        e.add_field(
-            name=f"`{E_WALLET}` New balance", value=f"```¥{wallet:,}```", inline=True
-        )
+        e.add_field(name=f"`{E_ITEM}` Item",          value=f"```{item_name}```", inline=True)
+        e.add_field(name=f"`{E_PAY}` Paid",           value=f"```¥{price:,}```",  inline=True)
+        e.add_field(name=f"`{E_WALLET}` New balance",  value=f"```¥{wallet:,}```", inline=True)
         return e
 
     @staticmethod
@@ -794,9 +677,9 @@ class UI:
             e.add_field(name="Empty", value="> *No items yet.*", inline=False)
         else:
             for item in items:
-                shop = item.get("shopitems") or {}
+                shop  = item.get("shopitems") or {}
                 itype = shop.get("type", "")
-                icon = E_ROLE_ITEM if itype == "role" else E_ITEM
+                icon  = E_ROLE_ITEM if itype == "role" else E_ITEM
                 e.add_field(
                     name=f"`{icon}` {shop.get('name', 'Unknown')}",
                     value=(
@@ -821,9 +704,9 @@ class UI:
         lines = []
         for i, row in enumerate(rows):
             medal = MEDALS[i] if i < len(MEDALS) else f"`#{i+1}`"
-            uid = int(row["user_id"])
-            name = name_map.get(uid, f"User {uid}")
-            val = int(row.get(value_key, 0))
+            uid   = int(row["user_id"])
+            name  = name_map.get(uid, f"User {uid}")
+            val   = int(row.get(value_key, 0))
             lines.append(f"{medal} **{name}** — `{value_prefix}{val:,}`")
         body = "\n".join(lines) if lines else "*No data yet.*"
         e = discord.Embed(
@@ -838,18 +721,15 @@ class UI:
     def leaderboard_global(rows: list[dict]) -> discord.Embed:
         lines = []
         for i, row in enumerate(rows):
-            medal = MEDALS[i] if i < len(MEDALS) else f"`#{i+1}`"
-            name = row.get("guild_name", f"Server {row['guild_id']}")
-            invite = row.get("invite_url")
-            display = f"[{name}]({invite})" if invite else f"**{name}**"
-            tier = int(row.get("tier", 1))
+            medal      = MEDALS[i] if i < len(MEDALS) else f"`#{i+1}`"
+            name       = row.get("guild_name", f"Server {row['guild_id']}")
+            invite     = row.get("invite_url")
+            display    = f"[{name}]({invite})" if invite else f"**{name}**"
+            tier       = int(row.get("tier", 1))
             tier_badge = TIER_EMOJI.get(tier, "")
-            lines.append(
-                f"{medal} {display} {tier_badge} — `¥{int(row['wallet_total']):,}`"
-            )
+            lines.append(f"{medal} {display} {tier_badge} — `¥{int(row['wallet_total']):,}`")
         e = discord.Embed(
-            description=f"> `{E_GLOBAL}` *Global Leaderboard — Top Servers*\n\n"
-            + "\n".join(lines),
+            description=f"> `{E_GLOBAL}` *Global Leaderboard — Top Servers*\n\n" + "\n".join(lines),
             color=get_color(),
         )
         e.set_footer(text="Ranked by total ¥ Yen held  ·  /global enrol to join")
@@ -867,10 +747,8 @@ class UI:
             description=f"> `{E_WARN}` *Warning issued to **{user.display_name}***",
             color=get_color(),
         )
-        e.add_field(name=f"`{E_REPORT}` Reason", value=f"```{reason}```", inline=False)
-        e.add_field(
-            name=f"`{E_NUMBERS}` Count", value=f"```{warn_count} / 3```", inline=True
-        )
+        e.add_field(name=f"`{E_REPORT}` Reason",  value=f"```{reason}```",        inline=False)
+        e.add_field(name=f"`{E_NUMBERS}` Count",  value=f"```{warn_count} / 3```", inline=True)
         if warn_count >= 3:
             e.add_field(
                 name=f"`{E_BANNED}` Auto-ban",
@@ -885,10 +763,8 @@ class UI:
             description=f"> `{E_WARN}` *You received a Denki warning.*",
             color=get_color(),
         )
-        e.add_field(name=f"`{E_REPORT}` Reason", value=f"```{reason}```", inline=False)
-        e.add_field(
-            name=f"`{E_NUMBERS}` Warnings", value=f"```{warn_count} / 3```", inline=True
-        )
+        e.add_field(name=f"`{E_REPORT}` Reason",   value=f"```{reason}```",        inline=False)
+        e.add_field(name=f"`{E_NUMBERS}` Warnings", value=f"```{warn_count} / 3```", inline=True)
         e.set_footer(text="3 warnings = permanent ban from Denki.")
         return e
 
@@ -915,29 +791,13 @@ class UI:
             description=f"> `{E_REPORT}` *New report filed*",
             color=get_color(),
         )
-        e.add_field(
-            name=f"`{E_USER}` Reported",
-            value=f"```{reported} ({reported.id})```",
-            inline=False,
-        )
-        e.add_field(
-            name=f"`{E_GUILD}` Server", value=f"```{guild_name}```", inline=True
-        )
-        e.add_field(
-            name=f"`{E_REPORT}` Reporter",
-            value=f"```{reporter} ({reporter.id})```",
-            inline=True,
-        )
+        e.add_field(name=f"`{E_USER}` Reported",      value=f"```{reported} ({reported.id})```",  inline=False)
+        e.add_field(name=f"`{E_GUILD}` Server",       value=f"```{guild_name}```",                 inline=True)
+        e.add_field(name=f"`{E_REPORT}` Reporter",    value=f"```{reporter} ({reporter.id})```",   inline=True)
         _pad(e)
-        e.add_field(name=f"`{E_REPORT}` Reason", value=f"```{reason}```", inline=False)
-        e.add_field(
-            name=f"`{E_WALLET}` Wallet snap",
-            value=f"```¥{wallet_snap:,}```",
-            inline=True,
-        )
-        e.set_footer(
-            text=f"!d warn {reported.id} <reason>  or  !d ban {reported.id} <reason>"
-        )
+        e.add_field(name=f"`{E_REPORT}` Reason",      value=f"```{reason}```",                     inline=False)
+        e.add_field(name=f"`{E_WALLET}` Wallet snap", value=f"```¥{wallet_snap:,}```",             inline=True)
+        e.set_footer(text=f"!d warn {reported.id} <reason>  or  !d ban {reported.id} <reason>")
         return e
 
     # ── Notifications ─────────────────────────────────────────────────────────
@@ -963,20 +823,20 @@ class UI:
     @staticmethod
     def help_home(user: discord.User | discord.Member) -> discord.Embed:
         modules = [
-            (E_WALLET, "economy", "balance · daily · work · rob · pay · vote"),
-            (E_COIN, "gambling", "coinflip · slots · blackjack · guess"),
-            (E_INVEST, "investing", "invest · vault"),
-            (E_SEASON, "season", "season info"),
-            (E_SHOP, "shop", "shop · buy · inventory · additem"),
+            (E_WALLET, "economy",     "balance · daily · work · rob · pay · vote"),
+            (E_COIN,   "gambling",    "coinflip · slots · blackjack · guess"),
+            (E_INVEST, "investing",   "invest · vault"),
+            (E_SEASON, "season",      "season info"),
+            (E_SHOP,   "shop",        "shop · buy · inventory · additem"),
             (E_TROPHY, "leaderboard", "server · investors · global"),
-            (E_GEAR, "admin", "config · earnsettings · init"),
-            (E_TEA_AI, "tea", "black · green · white · red · blue"),
+            (E_GEAR,   "admin",       "config · earnsettings · init"),
+            (E_TEA_AI, "tea",         "black · green · white · red · blue"),
         ]
         lines = "\n".join(f"> `{e}` **{mod}** — *{desc}*" for e, mod, desc in modules)
         return UI.embed(
             E_BOT,
             user,
-            f"Welcome to **Denki** — the global Discord economy bot.*\n\n"
+            f"Welcome to **Denki** — the global Discord economy bot.\n\n"
             f"> Your **¥ Yen wallet** is global — one balance across every server.\n"
             f"> Each server runs a **30-day season** — invest to win bonuses.\n\n"
             f"> Use `/help [module]` or `/help [command]` for details.\n\n{lines}",
@@ -990,16 +850,12 @@ class UI:
         lines = []
         for cmd in commands:
             aliases = "  ".join(f"`{a}`" for a in cmd.get("aliases", []))
-            line = f"**{cmd['name']}** `{cmd['usage']}`"
+            line    = f"**{cmd['name']}** `{cmd['usage']}`"
             if aliases:
                 line += f"  ·  {aliases}"
             line += f"\n> *{cmd['description']}*"
             lines.append(line)
-        e = UI.embed(
-            E_BOOK,
-            user,
-            f"Module: **{module}***\n\n" + "\n\n".join(lines),
-        )
+        e = UI.embed(E_BOOK, user, f"Module: **{module}**\n\n" + "\n\n".join(lines))
         e.set_footer(text="<required>  [optional]  ·  Prefix: !d  ·  Slash: /")
         return e
 
@@ -1013,24 +869,12 @@ class UI:
         examples: list[str],
         notes: Optional[str] = None,
     ) -> discord.Embed:
-        e = UI.embed(
-            E_BOOK,
-            user,
-            f"Command: **{name}***\n> *{description}*",
-        )
-        e.add_field(name=f"`{E_USAGE}` Usage", value=f"```{usage}```", inline=False)
+        e = UI.embed(E_BOOK, user, f"Command: **{name}**\n> *{description}*")
+        e.add_field(name=f"`{E_USAGE}` Usage",   value=f"```{usage}```", inline=False)
         if aliases:
-            e.add_field(
-                name=f"`{E_ALIAS}` Aliases",
-                value="  ".join(f"`{a}`" for a in aliases),
-                inline=False,
-            )
+            e.add_field(name=f"`{E_ALIAS}` Aliases", value="  ".join(f"`{a}`" for a in aliases), inline=False)
         if examples:
-            e.add_field(
-                name=f"`{E_EXAMPLE}` Examples",
-                value="\n".join(f"> `{ex}`" for ex in examples),
-                inline=False,
-            )
+            e.add_field(name=f"`{E_EXAMPLE}` Examples", value="\n".join(f"> `{ex}`" for ex in examples), inline=False)
         if notes:
             e.add_field(name=f"`{E_NOTE}` Notes", value=f"> *{notes}*", inline=False)
         e.set_footer(text="<required>  [optional]  ·  Prefix: !d  ·  Slash: /")
@@ -1043,7 +887,9 @@ class UI:
         return UI.embed(
             challenge.game_emoji,
             challenge.challenger,
-            f"{challenge.challenger.display_name} challenged {challenge.opponent.display_name}!*\n\n> *{challenge.game_desc}*\n\n> Bet: `¥{challenge.bet:,}` each  ·  Winner takes `¥{challenge.bet * 2:,}`",
+            f"{challenge.challenger.display_name} challenged {challenge.opponent.display_name}!\n\n"
+            f"> *{challenge.game_desc}*\n\n"
+            f"> Bet: `¥{challenge.bet:,}` each  ·  Winner takes `¥{challenge.bet * 2:,}`",
         )
 
     @staticmethod
@@ -1051,7 +897,7 @@ class UI:
         return UI.embed(
             E_SUCCESS,
             challenge.challenger,
-            f"{challenge.opponent.display_name} accepted! {challenge.game_emoji} **{challenge.game_name}** is starting…*",
+            f"{challenge.opponent.display_name} accepted! `{challenge.game_emoji}` **{challenge.game_name}** is starting…",
         )
 
     @staticmethod
@@ -1059,7 +905,7 @@ class UI:
         return UI.embed(
             E_CANCEL,
             challenge.challenger,
-            f"{challenge.opponent.display_name} declined. Bet `¥{challenge.bet:,}` refunded.*",
+            f"{challenge.opponent.display_name} declined. Bet `¥{challenge.bet:,}` refunded.",
         )
 
     @staticmethod
@@ -1067,7 +913,7 @@ class UI:
         return UI.embed(
             E_COOLDOWN,
             challenge.challenger,
-            f"Challenge expired — {challenge.opponent.display_name} didn't respond. Bet `¥{challenge.bet:,}` refunded.*",
+            f"Challenge expired — {challenge.opponent.display_name} didn't respond. Bet `¥{challenge.bet:,}` refunded.",
         )
 
     @staticmethod
@@ -1075,7 +921,7 @@ class UI:
         return UI.embed(
             challenge.game_emoji,
             challenge.challenger,
-            f"**{challenge.game_name}**\n{challenge.challenger.mention}  vs  {challenge.opponent.mention}\nPot: `¥{challenge.bet * 2:,}`*",
+            f"**{challenge.game_name}**\n{challenge.challenger.mention}  vs  {challenge.opponent.mention}\nPot: `¥{challenge.bet * 2:,}`",
             fields=[{"name": f"`{E_REPORT}` Rules", "value": rules, "inline": False}],
         )
 
@@ -1091,23 +937,11 @@ class UI:
         return UI.embed(
             E_TROPHY,
             winner,
-            f"{winner.display_name} wins!*",
+            f"{winner.display_name} wins!",
             fields=[
-                {
-                    "name": f"`{E_STATS}` Score",
-                    "value": f"```{p1.display_name}: {scores[p1.id]}  ·  {p2.display_name}: {scores[p2.id]}```",
-                    "inline": False,
-                },
-                {
-                    "name": f"`{E_POT}` Prize",
-                    "value": f"```¥{bet * 2:,}```",
-                    "inline": True,
-                },
-                {
-                    "name": f"`{E_PAY}` Paid by",
-                    "value": f"```{loser.display_name}```",
-                    "inline": True,
-                },
+                {"name": f"`{E_STATS}` Score",   "value": f"```{p1.display_name}: {scores[p1.id]}  ·  {p2.display_name}: {scores[p2.id]}```", "inline": False},
+                {"name": f"`{E_POT}` Prize",      "value": f"```¥{bet * 2:,}```",         "inline": True},
+                {"name": f"`{E_PAY}` Paid by",    "value": f"```{loser.display_name}```",  "inline": True},
             ],
         )
 
@@ -1116,7 +950,7 @@ class UI:
         return UI.embed(
             E_HANDSHAKE,
             challenge.challenger,
-            f"It's a tie! Both players receive their `¥{challenge.bet:,}` back.*",
+            f"It's a tie! Both players receive their `¥{challenge.bet:,}` back.",
         )
 
     @staticmethod
@@ -1124,7 +958,7 @@ class UI:
         return UI.embed(
             E_COOLDOWN,
             player,
-            f"{player.display_name} took too long — round forfeited.*",
+            f"{player.display_name} took too long — round forfeited.",
         )
 
     @staticmethod
@@ -1134,14 +968,14 @@ class UI:
         timed_out: bool,
     ) -> discord.Embed:
         if timed_out:
-            desc = f"Nobody answered in time!  ·  Answer: `{answer}`"
+            desc  = f"Nobody answered in time!  ·  Answer: `{answer}`"
+            emoji = E_COOLDOWN
         elif winner:
-            desc = f"**{winner.display_name}** got it!  ·  `{answer}`"
+            desc  = f"**{winner.display_name}** got it!  ·  `{answer}`"
+            emoji = E_SUCCESS
         else:
-            desc = f"Nobody got it right.  ·  Answer: `{answer}`"
-        emoji = E_COOLDOWN if timed_out else (E_SUCCESS if winner else E_CANCEL)
-        user = winner if winner else None  # This will need to be fixed - we need a user
-        # For now, return a basic embed since we don't have a user
+            desc  = f"Nobody got it right.  ·  Answer: `{answer}`"
+            emoji = E_CANCEL
         return discord.Embed(
             description=f"> `{emoji}` *{desc}*",
             color=get_color(),
@@ -1160,14 +994,8 @@ class UI:
             description=f"> `{E_MATH}` *Math Duel — Round {rnd}/{total}*",
             color=get_color(),
         )
-        e.add_field(
-            name=f"`{E_QUESTION}` Equation", value=f"```{equation} = ?```", inline=False
-        )
-        e.add_field(
-            name=f"`{E_STATS}` Score",
-            value=f"```{p1.display_name}: {scores[p1.id]}  ·  {p2.display_name}: {scores[p2.id]}```",
-            inline=False,
-        )
+        e.add_field(name=f"`{E_QUESTION}` Equation", value=f"```{equation} = ?```", inline=False)
+        e.add_field(name=f"`{E_STATS}` Score",        value=f"```{p1.display_name}: {scores[p1.id]}  ·  {p2.display_name}: {scores[p2.id]}```", inline=False)
         e.set_footer(text="Type your answer — first correct wins the round!")
         return e
 
@@ -1182,9 +1010,7 @@ class UI:
             description=f"> `{E_BOMB}` *Number Bomb — {player.display_name}'s turn*",
             color=get_color(),
         )
-        e.add_field(
-            name=f"`{E_NUMBERS}` Available", value=f"```{remaining}```", inline=False
-        )
+        e.add_field(name=f"`{E_NUMBERS}` Available", value=f"```{remaining}```", inline=False)
         if picked:
             e.add_field(
                 name=f"`{E_SUCCESS}` Picked",
@@ -1196,9 +1022,7 @@ class UI:
 
     @staticmethod
     def arcade_numberbomb_safe(player: discord.Member, chosen: int) -> discord.Embed:
-        return UI.embed(
-            E_RELIEVED, player, f"{player.display_name} picked `{chosen}` — safe!*"
-        )
+        return UI.embed(E_RELIEVED, player, f"{player.display_name} picked `{chosen}` — safe!")
 
     @staticmethod
     def arcade_numberbomb_explosion(
@@ -1210,14 +1034,9 @@ class UI:
         return UI.embed(
             E_EXPLOSION,
             winner,
-            f"**BOOM!** {loser.display_name} picked `{chosen}` — that was the bomb!*\n\n> `{E_TROPHY}` *{winner.display_name} wins!*",
-            fields=[
-                {
-                    "name": f"`{E_POT}` Prize",
-                    "value": f"```¥{bet * 2:,}```",
-                    "inline": True,
-                }
-            ],
+            f"**BOOM!** {loser.display_name} picked `{chosen}` — that was the bomb!\n\n"
+            f"> `{E_TROPHY}` *{winner.display_name} wins!*",
+            fields=[{"name": f"`{E_POT}` Prize", "value": f"```¥{bet * 2:,}```", "inline": True}],
         )
 
     @staticmethod
@@ -1225,7 +1044,7 @@ class UI:
         return UI.embed(
             E_RPS,
             player,
-            f"Rock Paper Scissors*\n\n> {player.display_name}, pick your move!\n> *Your opponent won't see this until both picks are in.*",
+            f"Rock Paper Scissors\n\n> {player.display_name}, pick your move!\n> *Your opponent won't see this until both picks are in.*",
         )
 
     @staticmethod
@@ -1240,11 +1059,7 @@ class UI:
             description=f"> `{E_RPS}` *Rock Paper Scissors — Round {rnd}/{total}*\n> Check your DMs to pick!",
             color=get_color(),
         )
-        e.add_field(
-            name=f"`{E_STATS}` Score",
-            value=f"```{p1.display_name}: {scores[p1.id]}  ·  {p2.display_name}: {scores[p2.id]}```",
-            inline=False,
-        )
+        e.add_field(name=f"`{E_STATS}` Score", value=f"```{p1.display_name}: {scores[p1.id]}  ·  {p2.display_name}: {scores[p2.id]}```", inline=False)
         return e
 
     @staticmethod
@@ -1255,8 +1070,9 @@ class UI:
         c2: str,
         winner: discord.Member | None,
     ) -> discord.Embed:
+        # Both tie and win cases use backtick-wrapped emoji in description
         result_str = (
-            f"{E_HANDSHAKE} *Tie!*"
+            f"`{E_HANDSHAKE}` *Tie!*"
             if winner is None
             else f"`{E_SUCCESS}` **{winner.display_name} wins the round!**"
         )
@@ -1276,15 +1092,15 @@ class UI:
         total_games: int = 3,
     ) -> discord.Embed:
         if result is None:
-            sym = E_TTT if view.current_symbol == "X" else E_TTT_O
+            sym    = E_TTT if view.current_symbol == "X" else E_TTT_O
             status = f"`{sym}` *{view.current_player.display_name}'s turn*"
         elif result == "draw":
             status = f"`{E_HANDSHAKE}` *Draw!*"
         elif result == "timeout":
             status = f"`{E_COOLDOWN}` *{view.current_player.display_name} timed out!*"
         else:
-            sym = E_TTT if result == "X" else E_TTT_O
-            gamer = view.p1 if result == "X" else view.p2
+            sym    = E_TTT if result == "X" else E_TTT_O
+            gamer  = view.p1 if result == "X" else view.p2
             status = f"`{sym}` **{gamer.display_name} wins this game!**"
 
         e = discord.Embed(
@@ -1310,192 +1126,14 @@ class UI:
             description=f"> `{E_REACTION}` *Reaction Race — Round {rnd}/{total}*\n> Get ready…",
             color=get_color(),
         )
-        e.add_field(
-            name=f"`{E_STATS}` Score",
-            value=f"```{p1.display_name}: {scores[p1.id]}  ·  {p2.display_name}: {scores[p2.id]}```",
-            inline=False,
-        )
-        e.set_footer(
-            text=f"Click {E_LIGHTNING} the instant it appears — watch for fake-outs!"
-        )
+        e.add_field(name=f"`{E_STATS}` Score", value=f"```{p1.display_name}: {scores[p1.id]}  ·  {p2.display_name}: {scores[p2.id]}```", inline=False)
+        e.set_footer(text=f"Click `{E_LIGHTNING}` the instant it appears — watch for fake-outs!")
         return e
 
 
-# ── CREATE COMPONENT V2 ──────────────────────────────────────────────────────
-
-
-class HelpView(discord.ui.LayoutView):
-    """
-    Components V2 help system — replaces static COMMAND_MAP with interactive UI.
-    Owner-locked — only the invoking user can interact.
-    """
-
-    def __init__(self, user: discord.User | discord.Member):
-        super().__init__(timeout=300)
-        self.user = user
-        self.current_module: str | None = None
-        self._build_initial_view()
-
-    def _build_initial_view(self) -> None:
-        """Build the initial help home view."""
-        self.clear_items()
-
-        # Module buttons in action row — max 5 per row
-        modules = [
-            ("Economy", E_WALLET, "balance · daily · work · rob · pay · vote"),
-            ("Gambling", E_COIN, "coinflip · slots · blackjack · guess"),
-            ("Investing", E_INVEST, "invest · vault"),
-            ("Season", E_SEASON, "season info"),
-            ("Shop", E_SHOP, "shop · buy · inventory"),
-        ]
-
-        row1 = discord.ui.ActionRow()
-        for name, emoji, desc in modules[:5]:
-            button = discord.ui.Button(
-                label=f"{emoji} {name}",
-                style=discord.ButtonStyle.secondary,
-                custom_id=f"help_mod_{name.lower()}",
-            )
-            row1.add_item(button)
-        self.add_item(row1)
-
-        # Additional modules
-        modules_2 = [
-            ("Leaderboard", E_TROPHY, "server · investors · global"),
-            ("Admin", E_GEAR, "config · earnsettings · init"),
-            ("Tea", E_TEA_AI, "black · green · white · red · blue"),
-        ]
-
-        row2 = discord.ui.ActionRow()
-        for name, emoji, desc in modules_2:
-            button = discord.ui.Button(
-                label=f"{emoji} {name}",
-                style=discord.ButtonStyle.secondary,
-                custom_id=f"help_mod_{name.lower()}",
-            )
-            row2.add_item(button)
-        self.add_item(row2)
-
-        # Footer row
-        footer_row = discord.ui.ActionRow()
-        footer_button = discord.ui.Button(
-            label=f"{E_BOOK} Back",
-            style=discord.ButtonStyle.secondary,
-            custom_id="help_home",
-        )
-        footer_row.add_item(footer_button)
-        self.add_item(footer_row)
-
-    async def _show_module(
-        self, interaction: discord.Interaction, module_name: str, emoji: str, desc: str
-    ) -> None:
-        """Show commands for a specific module."""
-        self.clear_items()
-        self.current_module = module_name
-
-        # Get commands for this module
-        commands = self._get_module_commands(module_name)
-
-        # Command list is included in the embed (not in view items)
-
-        # Back button
-        back_row = discord.ui.ActionRow()
-        back_button = discord.ui.Button(
-            label="← Back", style=discord.ButtonStyle.secondary, custom_id="help_back"
-        )
-        back_row.add_item(back_button)
-        self.add_item(back_row)
-
-        await interaction.response.edit_message(view=self)
-
-    def _get_module_commands(self, module_name: str) -> list[dict]:
-        """Get command data for a module (stub for introspection)."""
-        command_map = {
-            "economy": [
-                {"name": "/balance", "description": "Check wallet, bank, investments"},
-                {"name": "/daily", "description": "Claim daily reward"},
-                {"name": "/work", "description": "Pick a random job"},
-                {"name": "/rob", "description": "Rob another player"},
-                {"name": "/pay", "description": "Send Yen to someone"},
-                {"name": "/vote", "description": "Vote on top.gg"},
-            ],
-            "gambling": [
-                {"name": "/coinflip", "description": "Flip a coin for Yen"},
-                {"name": "/slots", "description": "Spin for rewards"},
-                {"name": "/blackjack", "description": "Play blackjack"},
-            ],
-            "investing": [
-                {"name": "/invest", "description": "Invest Yen in the vault"},
-                {"name": "/vault", "description": "Check vault status"},
-            ],
-            "season": [
-                {"name": "/season", "description": "View season info"},
-            ],
-            "shop": [
-                {"name": "/shop", "description": "View items for sale"},
-                {"name": "/buy", "description": "Purchase an item"},
-                {"name": "/inventory", "description": "View your items"},
-            ],
-            "leaderboard": [
-                {"name": "/leaderboard", "description": "Global wealth ranking"},
-            ],
-            "admin": [
-                {"name": "/config", "description": "Configure server settings"},
-            ],
-            "tea": [
-                {"name": "/tea", "description": "Play tea brewing game"},
-            ],
-        }
-        return command_map.get(module_name, [])
-
-    async def _back_to_home(self, interaction: discord.Interaction) -> None:
-        """Go back to home view."""
-        self._build_initial_view()
-        await interaction.response.edit_message(view=self)
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        """Only allow the invoking user to interact."""
-        if interaction.user.id != self.user.id:
-            await interaction.response.send_message(
-                embed=UI.error(interaction.user, "You can't use this help menu."),
-                ephemeral=True,
-            )
-            return False
-
-        # Route button clicks if data is available
-        if interaction.data:
-            custom_id = interaction.data.get("custom_id", "")
-
-            if custom_id.startswith("help_mod_"):
-                module = custom_id.replace("help_mod_", "").lower()
-                emoji_map = {
-                    "economy": E_WALLET,
-                    "gambling": E_COIN,
-                    "investing": E_INVEST,
-                    "season": E_SEASON,
-                    "shop": E_SHOP,
-                    "leaderboard": E_TROPHY,
-                    "admin": E_GEAR,
-                    "tea": E_TEA_AI,
-                }
-                emoji = emoji_map.get(module, E_INFO)
-                await self._show_module(interaction, module, emoji, "")
-                return False
-
-            elif custom_id == "help_back":
-                await self._back_to_home(interaction)
-                return False
-
-        return True
-
-        return True
-
-
-# ── PARSE ────────────────────────────────────────────────────────────────────
-
-
-# ── Backwards compat alias so no cog breaks before the rename sweep ───────────
+# ── Backwards compat alias ────────────────────────────────────────────────────
 Embeds = UI
+
 
 # ── Paginator ─────────────────────────────────────────────────────────────────
 
@@ -1514,9 +1152,9 @@ class PaginatorView(discord.ui.View):
         timeout: int = 120,
     ) -> None:
         super().__init__(timeout=timeout)
-        self.pages = pages
+        self.pages    = pages
         self.owner_id = owner_id
-        self.index = 0
+        self.index    = 0
         self._sync_buttons()
 
     def _sync_buttons(self) -> None:
@@ -1526,9 +1164,7 @@ class PaginatorView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
             await interaction.response.send_message(
-                embed=UI.error(
-                    interaction.user, "Only the command author can use these controls."
-                ),
+                embed=UI.error(interaction.user, "Only the command author can use these controls."),
                 ephemeral=True,
             )
             return False
@@ -1541,35 +1177,24 @@ class PaginatorView(discord.ui.View):
     async def _rebuild_pages(self) -> list[discord.Embed]:
         return self.pages
 
-    @discord.ui.button(label=E_PREV, style=discord.ButtonStyle.secondary, row=0)
-    async def btn_prev(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    @discord.ui.button(label=E_PREV,    style=discord.ButtonStyle.secondary, row=0)
+    async def btn_prev(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         self.index -= 1
         await self._edit(interaction)
 
-    @discord.ui.button(label=E_CLOSE, style=discord.ButtonStyle.secondary, row=0)
-    async def btn_close(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    @discord.ui.button(label=E_CLOSE,   style=discord.ButtonStyle.secondary, row=0)
+    async def btn_close(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         self.stop()
-        await interaction.response.edit_message(
-            embed=UI.base("*Closed.*"),
-            view=None,
-        )
+        await interaction.response.edit_message(embed=UI.base("*Closed.*"), view=None)
 
     @discord.ui.button(label=E_REFRESH, style=discord.ButtonStyle.secondary, row=0)
-    async def btn_refresh(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    async def btn_refresh(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         self.pages = await self._rebuild_pages()
         self.index = min(self.index, len(self.pages) - 1)
         await self._edit(interaction)
 
-    @discord.ui.button(label=E_NEXT, style=discord.ButtonStyle.secondary, row=0)
-    async def btn_next(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    @discord.ui.button(label=E_NEXT,    style=discord.ButtonStyle.secondary, row=0)
+    async def btn_next(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         self.index += 1
         await self._edit(interaction)
 
@@ -1594,30 +1219,22 @@ class ConfirmView(discord.ui.View):
 
     def __init__(self, owner_id: int, timeout: int = 30) -> None:
         super().__init__(timeout=timeout)
-        self.owner_id = owner_id
+        self.owner_id  = owner_id
         self.confirmed = False
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return interaction.user.id == self.owner_id
 
-    @discord.ui.button(
-        label="Confirm", style=discord.ButtonStyle.danger, emoji=E_CONFIRM, row=0
-    )
-    async def confirm(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger,    emoji=E_CONFIRM, row=0)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         self.confirmed = True
         await interaction.response.edit_message(
             embed=UI.info(interaction.user, "Confirmed — processing…"), view=None
         )
         self.stop()
 
-    @discord.ui.button(
-        label="Cancel", style=discord.ButtonStyle.secondary, emoji=E_CANCEL, row=0
-    )
-    async def cancel(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
+    @discord.ui.button(label="Cancel",  style=discord.ButtonStyle.secondary, emoji=E_CANCEL,  row=0)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         self.confirmed = False
         await interaction.response.edit_message(
             embed=UI.info(interaction.user, "Cancelled."), view=None
@@ -1625,7 +1242,7 @@ class ConfirmView(discord.ui.View):
         self.stop()
 
 
-# INPUT CONVERTERS & PARSERS
+# ── Input converters & parsers ────────────────────────────────────────────────
 
 
 def parse_amount(raw: str, wallet: int) -> int | None:
@@ -1634,7 +1251,7 @@ def parse_amount(raw: str, wallet: int) -> int | None:
     Accepts: integer, 'all', '1.5k', '2m', comma-formatted numbers.
     Returns None on invalid input.
     """
-    cleaned = raw.strip().replace(",", "").replace("_", "")
+    cleaned    = raw.strip().replace(",", "").replace("_", "")
     multiplier = 1
 
     if cleaned.lower() == "all":
@@ -1642,10 +1259,10 @@ def parse_amount(raw: str, wallet: int) -> int | None:
 
     if cleaned.lower().endswith("k"):
         multiplier = 1_000
-        cleaned = cleaned[:-1]
+        cleaned    = cleaned[:-1]
     elif cleaned.lower().endswith("m"):
         multiplier = 1_000_000
-        cleaned = cleaned[:-1]
+        cleaned    = cleaned[:-1]
 
     try:
         value = round(float(cleaned) * multiplier)
@@ -1654,11 +1271,11 @@ def parse_amount(raw: str, wallet: int) -> int | None:
         return None
 
 
-def format_remaining(delta) -> str:  # accepts timedelta
+def format_remaining(delta) -> str:
     """Format a timedelta as '2h 30m 15s'."""
-    total = int(delta.total_seconds())
+    total  = int(delta.total_seconds())
     h, rem = divmod(total, 3600)
-    m, s = divmod(rem, 60)
+    m, s   = divmod(rem, 60)
     parts: list[str] = []
     if h:
         parts.append(f"{h}h")
@@ -1677,16 +1294,14 @@ class UserIDConverter(_commands.Converter):
         try:
             return int(stripped)
         except ValueError:
-            raise _commands.BadArgument(
-                f"`{argument}` is not a valid user ID or mention."
-            )
+            raise _commands.BadArgument(f"`{argument}` is not a valid user ID or mention.")
 
 
 class AmountConverter(_commands.Converter):
     """Accept integers, decimals, k/m shorthands, comma-formatted numbers."""
 
     async def convert(self, ctx: Any, argument: str) -> int:
-        result = parse_amount(argument, wallet=0)  # wallet=0 — 'all' resolves to 0 here
+        result = parse_amount(argument, wallet=0)
         if result is None or result == 0:
             raise _commands.BadArgument(
                 f"`{argument}` is not a valid amount. Examples: `500`, `1.5k`, `2m`, `-100`"
