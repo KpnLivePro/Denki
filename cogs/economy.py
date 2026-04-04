@@ -26,7 +26,7 @@ VOTE_COOLDOWN = timedelta(hours=12)
 DAILY_BASE = 1_000
 VOTE_BASE = 2_000
 VOTE_WEEKEND_MULT = 2.0
-TOPGG_VOTE_URL = "https://top.gg/api/bots/1422399195062734881/vote"
+TOPGG_VOTE_URL = "https://top.gg/bot/1422399195062734881/vote"
 
 WORK_JOBS: list[tuple[str, int, int]] = [
     ("⚡ Electrical Engineer", 150, 400),

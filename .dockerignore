@@ -9,3 +9,7 @@ test_db*.py
 keep_alive.py
 .git/
 .gitignore
+.agents/
+.claude/
+.vscode/
+README.md
