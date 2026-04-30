@@ -1,12 +1,19 @@
-name: Deploy Denki to ACR
+name: Build and Deploy Denki to Azure
 
 on:
   push:
     branches: [main]
+    paths:
+      - '**'
+      - '.github/workflows/denki-AutoDeployTrigger-abf5fae7-6472-46aa-9d72-4b188b542f54.yml'
+  workflow_dispatch:
 
 jobs:
-  build-and-push:
+  build-and-deploy:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # Required for OIDC JWT Token
+      contents: read    # Required for private repo access
 
     steps:
       - name: Checkout code
@@ -19,9 +26,29 @@ jobs:
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 
-      - name: Build and push image
+      - name: Build and push image to ACR
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: ${{ secrets.ACR_LOGIN_SERVER }}/bot-2:latest
+          tags: |
+            ${{ secrets.ACR_LOGIN_SERVER }}/denki:${{ github.sha }}
+            ${{ secrets.ACR_LOGIN_SERVER }}/denki:latest
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.DENKI_AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.DENKI_AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.DENKI_AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy to Azure Container Apps
+        uses: azure/container-apps-deploy-action@v2
+        with:
+          appSourcePath: ${{ github.workspace }}
+          registryUrl: kpnworldcloud.azurecr.io
+          registryUsername: ${{ secrets.DENKI_REGISTRY_USERNAME }}
+          registryPassword: ${{ secrets.DENKI_REGISTRY_PASSWORD }}
+          containerAppName: denki
+          resourceGroup: jeremiah-rg
+          imageToBuild: kpncloud-bvfpfyezhjejddf9.azurecr.io/denki:${{ github.sha }}
