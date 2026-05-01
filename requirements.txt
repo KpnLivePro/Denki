@@ -5,3 +5,4 @@ supabase
 aiohttp
 psutil
 colorama
+python-dotenv
