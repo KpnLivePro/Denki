@@ -4,8 +4,10 @@ import asyncio
 import logging
 import os
 import sys
+import threading
 import traceback
 from pathlib import Path
+from flask import Flask
 from typing import Any
 
 import discord
@@ -138,7 +140,19 @@ class Denki(DenkiBot):
 
 bot = Denki()
 
+app = Flask(__name__)
 
+@app.route("/")
+def health():
+    return "Denki is alive!", 200
+
+def run_flask():
+    app.run(host="0.0.0.0", port=8080)
+
+def keep_alive():
+    thread = threading.Thread(target=run_flask, daemon=True)
+    thread.start()
+    
 # ── Global Ban Check ──────────────────────────────────────────────────────────
 @bot.check
 async def global_ban_check(ctx: commands.Context) -> bool:
@@ -178,4 +192,5 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    keep_alive()
     asyncio.run(main())
